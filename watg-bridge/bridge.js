@@ -1367,9 +1367,9 @@ async syncContacts() {
                     };
                     break;
                     
-              case 'sticker':
-                 await this.handleTelegramSticker(msg);
-                 return; // stop further handling, it's done inside handleTelegramSticker()
+case 'sticker':
+    await this.handleTelegramSticker(msg);
+    return; // stop further handling, it's done inside handleTelegramSticker()
 
 
             sendResult = await this.whatsappBot.sendMessage(whatsappJid, messageOptions);
@@ -1462,6 +1462,7 @@ async handleTelegramSticker(msg) {
         });
         await fs.unlink(fallbackPath).catch(() => {});
     }
+} // ← This closing bracket was missing for handleTelegramSticker
 
 async convertAnimatedSticker(inputPath) {
     const outputPath = inputPath.replace('.webp', '-converted.webp');
@@ -1483,7 +1484,6 @@ async convertAnimatedSticker(inputPath) {
             .save(outputPath);
     });
 }
-
 
     async handleTelegramLocation(msg) {
         try {
