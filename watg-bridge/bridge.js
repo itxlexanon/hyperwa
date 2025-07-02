@@ -1354,46 +1354,10 @@ class TelegramBridge {
                     };
                     break;
                     
-                case 'sticker':
-                    try {
-                        const stickerBuffer = fs.readFileSync(filePath);
+              case 'sticker':
+                 await this.handleTelegramSticker(msg);
+                 return; // stop further handling, it's done inside handleTelegramSticker()
 
-                        // FIXED: Proper sticker conversion for WhatsApp (512x512, WebP format)
-                        const convertedPath = filePath.replace('.webp', '-wa.webp');
-                        
-                        // Convert to WhatsApp sticker format
-                        await sharp(stickerBuffer)
-                            .resize(512, 512, {
-                                fit: 'contain',
-                                background: { r: 0, g: 0, b: 0, alpha: 0 }
-                            })
-                            .webp({ 
-                                quality: 100,
-                                lossless: false,
-                                effort: 6
-                            })
-                            .toFile(convertedPath);
-
-                        // Read the converted sticker
-                        const convertedBuffer = fs.readFileSync(convertedPath);
-
-                        messageOptions = {
-                            sticker: convertedBuffer
-                        };
-
-                        // Clean up converted file
-                        setTimeout(() => fs.unlink(convertedPath).catch(() => {}), 5000);
-
-                    } catch (conversionError) {
-                        logger.warn('🧊 Sticker conversion failed, sending as image:', conversionError);
-
-                        messageOptions = {
-                            image: fs.readFileSync(filePath),
-                            caption: 'Sticker'
-                        };
-                    }
-                    break;
-            }
 
             sendResult = await this.whatsappBot.sendMessage(whatsappJid, messageOptions);
 
@@ -1417,119 +1381,98 @@ class TelegramBridge {
         }
     }
 
-    async convertStickerForWhatsApp(inputPath, stickerInfo) {
-        try {
-            const outputPath = inputPath.replace('.webp', '-wa.webp');
-            
-            // Check if sticker is animated
-            const isAnimated = stickerInfo.is_animated || stickerInfo.is_video;
-            
-            if (isAnimated && config.get('telegram.features.animatedStickers')) {
-                // Method 1: FFmpeg for animated stickers
-                try {
-                    const animatedOutputPath = inputPath.replace('.webp', '-animated.webp');
-                    
-                    await new Promise((resolve, reject) => {
-                        ffmpeg(inputPath)
-                            .outputOptions([
-                                '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=transparent',
-                                '-quality', '100',
-                                '-compression_level', '6',
-                                '-preset', 'default',
-                                '-loop', '0' // Enable looping for animated stickers
-                            ])
-                            .format('webp')
-                            .on('end', resolve)
-                            .on('error', reject)
-                            .save(animatedOutputPath);
-                    });
+async handleTelegramSticker(msg) {
+    const topicId = msg.message_thread_id;
+    const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+    const chatId = msg.chat.id;
 
-                    const stats = await fs.stat(animatedOutputPath);
-                    if (stats.size > 0 && stats.size < 1024 * 1024) { // Less than 1MB
-                        logger.debug('✅ Animated sticker conversion successful');
-                        return animatedOutputPath;
-                    }
-                } catch (animatedError) {
-                    logger.debug('Animated sticker conversion failed, falling back to static:', animatedError);
-                }
-            }
-            
-            // Method 2: Sharp conversion for static stickers
-            try {
-                await sharp(inputPath)
-                    .resize(512, 512, {
-                        fit: 'contain',
-                        background: { r: 0, g: 0, b: 0, alpha: 0 }
-                    })
-                    .webp({ 
-                        quality: 100,
-                        lossless: false,
-                        effort: 6,
-                        metadata: 'none'
-                    })
-                    .toFile(outputPath);
-
-                // Verify the output file
-                const stats = await fs.stat(outputPath);
-                if (stats.size > 0 && stats.size < 1024 * 1024) { // Less than 1MB
-                    logger.debug('✅ Sharp sticker conversion successful');
-                    return outputPath;
-                }
-            } catch (sharpError) {
-                logger.debug('Sharp sticker conversion failed:', sharpError);
-            }
-
-            // Method 3: FFmpeg conversion as fallback
-            try {
-                const ffmpegOutputPath = inputPath.replace('.webp', '-ffmpeg.webp');
-                
-                await new Promise((resolve, reject) => {
-                    ffmpeg(inputPath)
-                        .outputOptions([
-                            '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=transparent',
-                            '-quality', '100',
-                            '-compression_level', '6',
-                            '-preset', 'default'
-                        ])
-                        .format('webp')
-                        .on('end', resolve)
-                        .on('error', reject)
-                        .save(ffmpegOutputPath);
-                });
-
-                const stats = await fs.stat(ffmpegOutputPath);
-                if (stats.size > 0 && stats.size < 1024 * 1024) {
-                    logger.debug('✅ FFmpeg sticker conversion successful');
-                    return ffmpegOutputPath;
-                }
-            } catch (ffmpegError) {
-                logger.debug('FFmpeg sticker conversion failed:', ffmpegError);
-            }
-
-            // Method 4: Basic Sharp resize as final fallback
-            try {
-                const fallbackPath = inputPath.replace('.webp', '-fallback.webp');
-                
-                await sharp(inputPath)
-                    .resize(512, 512)
-                    .webp({ quality: 90 })
-                    .toFile(fallbackPath);
-
-                logger.debug('✅ Fallback sticker conversion successful');
-                return fallbackPath;
-            } catch (fallbackError) {
-                logger.debug('Fallback sticker conversion failed:', fallbackError);
-            }
-
-            // If all conversions fail, return original
-            logger.warn('⚠️ All sticker conversion methods failed, using original');
-            return inputPath;
-
-        } catch (error) {
-            logger.error('❌ Sticker conversion error:', error);
-            return inputPath;
-        }
+    if (!whatsappJid) {
+        logger.warn('⚠️ Could not find WhatsApp chat for Telegram sticker');
+        return;
     }
+
+    try {
+        await this.sendPresence(whatsappJid, 'composing');
+
+        const fileId = msg.sticker.file_id;
+        const fileLink = await this.telegramBot.getFileLink(fileId);
+        const stickerBuffer = (await axios.get(fileLink, { responseType: 'arraybuffer' })).data;
+        const fileName = `sticker_${Date.now()}`;
+        const inputPath = path.join(this.tempDir, `${fileName}.webp`);
+        await fs.writeFile(inputPath, stickerBuffer);
+
+        let outputBuffer;
+
+        // Detect animated sticker type
+        const isAnimated = msg.sticker.is_animated || msg.sticker.is_video;
+
+        if (isAnimated) {
+            const animatedPath = await this.convertAnimatedSticker(inputPath);
+            if (animatedPath) {
+                outputBuffer = await fs.readFile(animatedPath);
+                await fs.unlink(animatedPath).catch(() => {});
+            } else {
+                throw new Error('Animated sticker conversion failed');
+            }
+        } else {
+            const sticker = new Sticker(stickerBuffer, {
+                type: StickerTypes.FULL,
+                pack: 'Telegram Stickers',
+                author: 'BridgeBot',
+                quality: 100
+            });
+            outputBuffer = await sticker.toBuffer();
+        }
+
+        const result = await this.whatsappBot.sendMessage(whatsappJid, {
+            sticker: outputBuffer
+        });
+
+        await fs.unlink(inputPath).catch(() => {});
+
+        if (result?.key?.id) {
+            logger.info('✅ Sticker sent to WhatsApp');
+            await this.setReaction(chatId, msg.message_id, '👍');
+        } else {
+            throw new Error('Sticker sent but no confirmation');
+        }
+
+    } catch (err) {
+        logger.error('❌ Failed to send sticker to WhatsApp:', err);
+        await this.setReaction(chatId, msg.message_id, '❌');
+
+        // Fallback: send as photo
+        const fallbackPath = path.join(this.tempDir, `fallback_${Date.now()}.png`);
+        await sharp(stickerBuffer).resize(512, 512).png().toFile(fallbackPath);
+        await this.telegramBot.sendPhoto(chatId, fallbackPath, {
+            message_thread_id: topicId,
+            caption: 'Sticker (fallback)'
+        });
+        await fs.unlink(fallbackPath).catch(() => {});
+    }
+}
+
+async convertAnimatedSticker(inputPath) {
+    const outputPath = inputPath.replace('.webp', '-converted.webp');
+
+    return new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+            .outputOptions([
+                '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
+                '-loop', '0',
+                '-an',
+                '-vsync', '0'
+            ])
+            .outputFormat('webp')
+            .on('end', () => resolve(outputPath))
+            .on('error', (err) => {
+                logger.debug('Animated sticker conversion failed:', err.message);
+                resolve(null); // fallback
+            })
+            .save(outputPath);
+    });
+}
+
 
     async handleTelegramLocation(msg) {
         try {
