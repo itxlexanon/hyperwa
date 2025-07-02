@@ -25,10 +25,13 @@ class Config {
             },
 
             // Database configuration
-            mongo: {
-                uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
-                dbName: 'advancedwa'
-            },
+database: {
+  mongodb: {
+    uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
+    dbName: 'advancedwa'
+  }
+}
+
 
             // External API configurations
             apis: {
