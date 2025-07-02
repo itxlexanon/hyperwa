@@ -10,6 +10,9 @@ const sharp = require('sharp');
 const mime = require('mime-types');
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const ffmpeg = require('fluent-ffmpeg');
+const { Sticker, StickerTypes } = require('wa-sticker-formatter');
+const { exec } = require('child_process');
+
 
 class TelegramBridge {
     constructor(whatsappBot) {
