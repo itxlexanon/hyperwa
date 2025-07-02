@@ -1462,7 +1462,6 @@ async handleTelegramSticker(msg) {
         });
         await fs.unlink(fallbackPath).catch(() => {});
     }
-}
 
 async convertAnimatedSticker(inputPath) {
     const outputPath = inputPath.replace('.webp', '-converted.webp');
