@@ -25,13 +25,9 @@ class Config {
             },
 
             // Database configuration
-            database: {
-                mongo: {
-                    uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0', // MongoDB connection URI
-                    dbName: 'advancedwa', // Database name
-                    connectionTimeout: 30000, // Connection timeout in milliseconds
-                    maxPoolSize: 10 // Maximum connection pool size
-                }
+            mongo: {
+                uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
+                dbName: 'advancedwa'
             },
 
             // External API configurations
