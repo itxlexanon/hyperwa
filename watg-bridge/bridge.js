@@ -1370,6 +1370,8 @@ async syncContacts() {
 case 'sticker':
     await this.handleTelegramSticker(msg);
     return; // stop further handling, it's done inside handleTelegramSticker()
+    break;
+} // <-- add this to close the switch
 
 
             sendResult = await this.whatsappBot.sendMessage(whatsappJid, messageOptions);
@@ -1484,7 +1486,7 @@ async convertAnimatedSticker(inputPath) {
             .save(outputPath);
     });
 }
-}
+
     async handleTelegramLocation(msg) {
         try {
             const topicId = msg.message_thread_id;
