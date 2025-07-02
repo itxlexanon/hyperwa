@@ -117,117 +117,133 @@ class MessageHandler {
         }
     }
 
-    async handleCommand(msg, text) {
-        const sender = msg.key.remoteJid;
-        const participant = msg.key.participant || sender;
-        const prefix = config.get('bot.prefix');
-        
-        // Extract command and arguments
-        const args = text.slice(prefix.length).trim().split(/\s+/);
-        const command = args[0].toLowerCase();
-        const params = args.slice(1);
+async handleCommand(msg, text) {
+    const sender = msg.key.remoteJid;
+    const participant = msg.key.participant || sender;
+    const prefix = config.get('bot.prefix');
+    
+    const args = text.slice(prefix.length).trim().split(/\s+/);
+    const command = args[0].toLowerCase();
+    const params = args.slice(1);
 
-        // Check permissions
-        if (!this.checkPermissions(msg, command)) {
+    // Debug sender info
+    logger.debug(`📥 Command received: ${command} from ${participant}`);
+    logger.debug('Sender JID:', sender);
+    logger.debug('Participant JID:', participant);
+
+    if (!this.checkPermissions(msg, command)) {
+        logger.debug(`🚫 User ${participant} not permitted to run ${command}`);
+        return this.bot.sendMessage(sender, {
+            text: '❌ You don\'t have permission to use this command.'
+        });
+    }
+
+    const userId = participant.split('@')[0];
+    if (config.get('features.rateLimiting')) {
+        const canExecute = await rateLimiter.checkCommandLimit(userId);
+        if (!canExecute) {
+            const remainingTime = await rateLimiter.getRemainingTime(userId);
             return this.bot.sendMessage(sender, {
-                text: '❌ You don\'t have permission to use this command.'
-            });
-        }
-
-        // Check rate limits
-        const userId = participant.split('@')[0];
-        if (config.get('features.rateLimiting')) {
-            const canExecute = await rateLimiter.checkCommandLimit(userId);
-            if (!canExecute) {
-                const remainingTime = await rateLimiter.getRemainingTime(userId);
-                return this.bot.sendMessage(sender, {
-                    text: `⏱️ Rate limit exceeded. Try again in ${Math.ceil(remainingTime / 1000)} seconds.`
-                });
-            }
-        }
-
-        // Auto react to command if enabled
-        if (config.get('features.autoReact')) {
-            try {
-                await this.bot.sock.sendMessage(sender, {
-                    react: { key: msg.key, text: '⏳' }
-                });
-            } catch (error) {
-                logger.debug('Failed to react to command:', error);
-            }
-        }
-
-        // Execute command
-        const handler = this.commandHandlers.get(command);
-        if (handler) {
-            try {
-                await handler.execute(msg, params, {
-                    bot: this.bot,
-                    sender,
-                    participant,
-                    isGroup: sender.endsWith('@g.us'),
-                    messageHandler: this
-                });
-                
-                logger.info(`✅ Command executed: ${command} by ${participant}`);
-                
-                // Success reaction
-                if (config.get('features.autoReact')) {
-                    try {
-                        await this.bot.sock.sendMessage(sender, {
-                            react: { key: msg.key, text: '✅' }
-                        });
-                    } catch (error) {
-                        logger.debug('Failed to react with success:', error);
-                    }
-                }
-                
-                // Log command to Telegram
-                if (this.bot.telegramBridge) {
-                    await this.bot.telegramBridge.logToTelegram('📝 Command Executed', 
-                        `Command: ${command}\nUser: ${participant}\nChat: ${sender}`);
-                }
-            } catch (error) {
-                logger.error(`❌ Command failed: ${command}`, error);
-                
-                // Error reaction
-                if (config.get('features.autoReact')) {
-                    try {
-                        await this.bot.sock.sendMessage(sender, {
-                            react: { key: msg.key, text: '❌' }
-                        });
-                    } catch (reactError) {
-                        logger.debug('Failed to react with error:', reactError);
-                    }
-                }
-                
-                await this.bot.sendMessage(sender, {
-                    text: `❌ Command failed: ${error.message}`
-                });
-                
-                // Log error to Telegram
-                if (this.bot.telegramBridge) {
-                    await this.bot.telegramBridge.logToTelegram('❌ Command Error', 
-                        `Command: ${command}\nError: ${error.message}\nUser: ${participant}`);
-                }
-            }
-        } else {
-            // Unknown command reaction
-            if (config.get('features.autoReact')) {
-                try {
-                    await this.bot.sock.sendMessage(sender, {
-                        react: { key: msg.key, text: '❓' }
-                    });
-                } catch (error) {
-                    logger.debug('Failed to react with question:', error);
-                }
-            }
-            
-            await this.bot.sendMessage(sender, {
-                text: `❓ Unknown command: ${command}\nType *${prefix}help* for available commands.`
+                text: `⏱️ Rate limit exceeded. Try again in ${Math.ceil(remainingTime / 1000)} seconds.`
             });
         }
     }
+
+    // ⏳ React to command
+    if (config.get('features.autoReact')) {
+        try {
+            await this.bot.sock.sendMessage(sender, {
+                react: { key: msg.key, text: '⏳' }
+            });
+        } catch (err) {
+            logger.debug('⏳ Failed to react to command start:', err);
+        }
+    }
+
+    const handler = this.commandHandlers.get(command);
+    if (handler) {
+        try {
+            const result = await handler.execute(msg, params, {
+                bot: this.bot,
+                sender,
+                participant,
+                isGroup: sender.endsWith('@g.us'),
+                messageHandler: this
+            });
+
+            logger.debug(`✅ Command executed: ${command}, result:`, result);
+
+            // ✅ Success reaction
+            if (config.get('features.autoReact')) {
+                try {
+                    await this.bot.sock.sendMessage(sender, {
+                        react: { key: msg.key, text: '✅' }
+                    });
+                } catch (e) {
+                    logger.debug('✅ Failed to react success:', e);
+                }
+            }
+
+            // ✅ Send result back
+            if (result && typeof result === 'string') {
+                logger.debug(`➡️ Sending command result to ${sender}`);
+                try {
+                    await this.bot.sendMessage(sender, { text: result });
+                } catch (sendErr) {
+                    logger.error('❌ Failed to send command result to user:', sendErr);
+                }
+            }
+
+            // Log to Telegram
+            if (this.bot.telegramBridge) {
+                await this.bot.telegramBridge.logToTelegram('📝 Command Executed', 
+                    `Command: ${command}\nUser: ${participant}\nChat: ${sender}`);
+            }
+
+        } catch (error) {
+            logger.error(`❌ Command failed: ${command}`, error);
+
+            if (config.get('features.autoReact')) {
+                try {
+                    await this.bot.sock.sendMessage(sender, {
+                        react: { key: msg.key, text: '❌' }
+                    });
+                } catch (e) {
+                    logger.debug('❌ Failed to react error:', e);
+                }
+            }
+
+            try {
+                await this.bot.sendMessage(sender, {
+                    text: `❌ Command failed: ${error.message}`
+                });
+            } catch (e) {
+                logger.error('❌ Failed to send error message to user:', e);
+            }
+
+            if (this.bot.telegramBridge) {
+                await this.bot.telegramBridge.logToTelegram('❌ Command Error', 
+                    `Command: ${command}\nError: ${error.message}\nUser: ${participant}`);
+            }
+        }
+    } else {
+        logger.debug(`❓ Unknown command: ${command}`);
+        if (config.get('features.autoReact')) {
+            try {
+                await this.bot.sock.sendMessage(sender, {
+                    react: { key: msg.key, text: '❓' }
+                });
+            } catch (e) {
+                logger.debug('❓ Failed to react unknown command:', e);
+            }
+        }
+
+        await this.bot.sendMessage(sender, {
+            text: `❓ Unknown command: ${command}\nType *${prefix}help* for available commands.`
+        });
+    }
+}
+
 
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
