@@ -1484,7 +1484,7 @@ async convertAnimatedSticker(inputPath) {
             .save(outputPath);
     });
 }
-
+}
     async handleTelegramLocation(msg) {
         try {
             const topicId = msg.message_thread_id;
