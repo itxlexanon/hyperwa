@@ -1,3 +1,6 @@
+const { connectDb } = require('../utils/db');
+const helpers = require('../utils/helpers');
+
 class ContactSyncModule {
     constructor(bot) {
         this.bot = bot;
