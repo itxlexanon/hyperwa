@@ -1619,19 +1619,15 @@ async convertAnimatedSticker(inputPath) {
     async syncWhatsAppConnection() {
         if (!this.telegramBot) return;
 
-        await this.logToTelegram('🤖 WhatsApp Bot Connected', 
+        await this.logToTelegram('🤖 HyperWa Bot Connected', 
             `✅ Bot: ${config.get('bot.name')} v${config.get('bot.version')}\n` +
             `📱 WhatsApp: Connected\n` +
             `🔗 Telegram Bridge: Active\n` +
             `📞 Contacts: ${this.contactMappings.size} synced\n` +
             `🚀 Ready to bridge messages!`);
 
-        // Send start message
-        await this.sendStartMessage();
-
-        if (this.botChatId) {
-            await this.commands.handleStart(this.botChatId);
-        }
+        // Start continuous contact syncing
+        await this.startContactSync();
     }
 
     async setupWhatsAppHandlers() {
@@ -1640,13 +1636,7 @@ async convertAnimatedSticker(inputPath) {
             return;
         }
 
-        // Enhanced call notification handler
-        this.whatsappBot.sock.ev.on('call', async (calls) => {
-            for (const call of calls) {
-                await this.handleCallNotification(call);
-            }
-        });
-
+        // Enhanced contact sync handlers
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             try {
                 let updatedCount = 0;
@@ -1655,6 +1645,7 @@ async convertAnimatedSticker(inputPath) {
                         const phone = contact.id.split('@')[0];
                         const oldName = this.contactMappings.get(phone);
                         
+                        // Only update if it's a real contact name (not handle name)
                         if (contact.name !== phone && 
                             !contact.name.startsWith('+') && 
                             contact.name.length > 2 &&
@@ -1663,6 +1654,7 @@ async convertAnimatedSticker(inputPath) {
                             logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
                             updatedCount++;
                             
+                            // Update topic name immediately
                             const jid = contact.id;
                             if (this.chatMappings.has(jid)) {
                                 const topicId = this.chatMappings.get(jid);
@@ -1680,11 +1672,9 @@ async convertAnimatedSticker(inputPath) {
                 }
                 if (updatedCount > 0) {
                     logger.info(`✅ Processed ${updatedCount} contact updates`);
-                    await this.logToTelegram('✅ Contact Updates Processed', `Updated ${updatedCount} contacts.`);
                 }
             } catch (error) {
                 logger.error('❌ Failed to process contact updates:', error);
-                await this.logToTelegram('❌ Contact Updates Failed', `Error: ${error.message}`);
             }
         });
 
@@ -1694,6 +1684,7 @@ async convertAnimatedSticker(inputPath) {
                 for (const contact of contacts) {
                     if (contact.id && contact.name) {
                         const phone = contact.id.split('@')[0];
+                        // Only save real contact names
                         if (contact.name !== phone && 
                             !contact.name.startsWith('+') && 
                             contact.name.length > 2 &&
@@ -1706,7 +1697,6 @@ async convertAnimatedSticker(inputPath) {
                 }
                 if (newCount > 0) {
                     logger.info(`✅ Added ${newCount} new contacts`);
-                    await this.logToTelegram('✅ New Contacts Added', `Added ${newCount} new contacts.`);
                 }
             } catch (error) {
                 logger.error('❌ Failed to process new contacts:', error);
@@ -1715,7 +1705,6 @@ async convertAnimatedSticker(inputPath) {
 
         logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
     }
-
     async shutdown() {
         logger.info('🛑 Shutting down Telegram bridge...');
         
