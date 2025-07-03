@@ -1,22 +1,22 @@
-
 const logger = require('../Core/logger');
 const config = require('../config');
 
 class Helpers {
-    // FIXED: Smart error handling that edits the ORIGINAL command message
+    // FIXED: Smart error handling that properly edits messages and handles reactions
     static async smartErrorRespond(bot, originalMsg, options = {}) {
         const {
             processingText = '⏳ Processing...',
             errorText = '❌ Something went wrong.',
             actionFn,
-            autoReact = config.get('features.autoReact'),
-            editMessages = config.get('features.editMessages')
+            autoReact = config.get('features.autoReact', true),
+            editMessages = config.get('features.editMessages', true)
         } = options;
 
         const sender = originalMsg.key.remoteJid;
+        let processingMsgKey = null;
 
         try {
-            // React with processing emoji on the ORIGINAL command message
+            // 1. React with processing emoji on the ORIGINAL command message
             if (autoReact) {
                 try {
                     await bot.sock.sendMessage(sender, {
@@ -27,24 +27,20 @@ class Helpers {
                 }
             }
 
-            // FIXED: Edit the ORIGINAL command message instead of creating new one
-            if (config.get('features.smartProcessing') && editMessages) {
+            // 2. Send processing message (don't edit original command)
+            if (editMessages) {
                 try {
-                    await bot.sock.sendMessage(sender, {
-                        text: processingText,
-                        edit: originalMsg.key
-                    });
-                } catch (editError) {
-                    logger.debug('Failed to edit original message with processing text:', editError);
-                    // Fallback: send new message
-                    await bot.sendMessage(sender, { text: processingText });
+                    const processingMsg = await bot.sendMessage(sender, { text: processingText });
+                    processingMsgKey = processingMsg.key;
+                } catch (sendError) {
+                    logger.debug('Failed to send processing message:', sendError);
                 }
             }
 
-            // Execute the action
+            // 3. Execute the action
             const result = await actionFn();
 
-            // Success reaction on original message
+            // 4. Success reaction on original message
             if (autoReact) {
                 try {
                     await bot.sock.sendMessage(sender, {
@@ -55,28 +51,31 @@ class Helpers {
                 }
             }
 
-            // FIXED: Edit the ORIGINAL command message with result
-            if (editMessages && result && typeof result === 'string') {
+            // 5. Edit processing message with result OR send new message
+            if (processingMsgKey && result && typeof result === 'string') {
                 try {
                     await bot.sock.sendMessage(sender, {
                         text: result,
-                        edit: originalMsg.key
+                        edit: processingMsgKey
                     });
                 } catch (editError) {
-                    logger.debug('Failed to edit original message with result:', editError);
+                    logger.debug('Failed to edit processing message with result:', editError);
                     // Fallback: send new message
                     await bot.sendMessage(sender, { text: result });
                 }
-            } else if (editMessages && !result) {
+            } else if (processingMsgKey && !result) {
                 // Edit with success message if no result returned
                 try {
                     await bot.sock.sendMessage(sender, {
                         text: '✅ Command completed successfully!',
-                        edit: originalMsg.key
+                        edit: processingMsgKey
                     });
                 } catch (editError) {
-                    logger.debug('Failed to edit original message with success:', editError);
+                    logger.debug('Failed to edit processing message with success:', editError);
                 }
+            } else if (result && typeof result === 'string') {
+                // Send result as new message if no processing message
+                await bot.sendMessage(sender, { text: result });
             }
 
             return result;
@@ -95,17 +94,17 @@ class Helpers {
                 }
             }
 
-            // FIXED: Edit the ORIGINAL command message with error
+            // Edit processing message with error OR send new error message
             const finalErrorText = `${errorText}\n\n🔍 Error: ${error.message}`;
             
-            if (editMessages) {
+            if (processingMsgKey) {
                 try {
                     await bot.sock.sendMessage(sender, {
                         text: finalErrorText,
-                        edit: originalMsg.key
+                        edit: processingMsgKey
                     });
                 } catch (editError) {
-                    logger.debug('Failed to edit original message with error:', editError);
+                    logger.debug('Failed to edit processing message with error:', editError);
                     // Fallback: send new message
                     await bot.sendMessage(sender, { text: finalErrorText });
                 }
