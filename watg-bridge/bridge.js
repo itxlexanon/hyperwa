@@ -1,6 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const TelegramCommands = require('./commands');
-const BridgeCore = require('./Core/Bridgecore');
+const BridgeCore = require('./Bridgecore');
 const config = require('../config');
 const logger = require('../Core/logger');
 const fs = require('fs-extra');
