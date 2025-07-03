@@ -1,7 +1,7 @@
-const googleTTS = require('google-tts-api');
-const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
+const { Readable } = require('stream');
+const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
@@ -10,20 +10,20 @@ class VoiceModule {
         this.bot = bot;
         this.name = 'voice';
         this.metadata = {
-            description: 'Text to Voice converter',
+            description: 'Reply with voice note from replied audio',
             version: '1.0.0',
-            author: 'You',
-            category: 'utility'
+            author: 'ChatGPT',
+            category: 'media'
         };
         this.commands = [
             {
                 name: 'voice',
-                description: 'Send voice note from text or reply',
-                usage: '.voice <text|number>',
+                description: 'Send replied audio as a voice note',
+                usage: '.voice (reply to audio)',
                 permissions: 'public',
                 ui: {
-                    processingText: '🎤 *Generating voice...*',
-                    errorText: '❌ *Voice generation failed*'
+                    processingText: '🎙️ *Generating voice...*',
+                    errorText: '❌ *Voice generation failed.*'
                 },
                 execute: this.sendVoice.bind(this)
             }
@@ -31,83 +31,67 @@ class VoiceModule {
     }
 
     async sendVoice(msg, params, context) {
-        const { sock } = this.bot;
-        const text = params.join(' ').trim();
-        const reply = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-        const from = msg.key.remoteJid;
-        const sender = msg.key.participant || msg.key.remoteJid;
-
-        let toSendJid = from;
-        let inputText = text;
-
-        // If replying and no params, use reply text or caption
-        if (reply && !text) {
-            if (reply.conversation) inputText = reply.conversation;
-            else if (reply.extendedTextMessage?.text) inputText = reply.extendedTextMessage.text;
-            else if (reply.imageMessage?.caption) inputText = reply.imageMessage.caption;
-        }
-
-        // If a phone number is passed (e.g. .voice +123456789)
-        if (text.match(/^\+?\d{6,}$/)) {
-            toSendJid = text.replace(/[^0-9]/g, '') + '@s.whatsapp.net';
-            inputText = 'Hello from your bot!';
-        }
-
-        if (!inputText) return '⚠️ *No text provided.*';
-
         try {
-            // Get TTS URL
-            const url = googleTTS.getAudioUrl(inputText, {
-                lang: 'en',
-                slow: false,
-                host: 'https://translate.google.com',
+            const quoted = msg.quoted;
+
+            if (!quoted || !quoted.message || !quoted.message.audioMessage) {
+                return '❗️Please reply to an audio message.';
+            }
+
+            const mediaPath = path.join(__dirname, '..', 'temp');
+            if (!fs.existsSync(mediaPath)) fs.mkdirSync(mediaPath);
+
+            const inputFile = path.join(mediaPath, `input_${Date.now()}.ogg`);
+            const outputFile = path.join(mediaPath, `voice_${Date.now()}.ogg`);
+
+            // Download audio message
+            const stream = await this.bot.wa.downloadMediaMessage(quoted);
+            const writeStream = fs.createWriteStream(inputFile);
+            stream.pipe(writeStream);
+
+            // Wait for download to finish
+            await new Promise((resolve, reject) => {
+                writeStream.on('finish', resolve);
+                writeStream.on('error', reject);
             });
 
-            // Download and convert to voice note (OGG/Opus)
-            const mp3Path = path.join(__dirname, 'temp_voice.mp3');
-            const oggPath = path.join(__dirname, 'temp_voice.ogg');
-
-            const stream = fs.createWriteStream(mp3Path);
-            const res = await fetch(url);
+            // Convert to WhatsApp-compatible voice note
             await new Promise((resolve, reject) => {
-                res.body.pipe(stream);
-                res.body.on('error', reject);
-                stream.on('finish', resolve);
-            });
-
-            await new Promise((resolve, reject) => {
-                ffmpeg(mp3Path)
+                ffmpeg(inputFile)
                     .audioCodec('libopus')
-                    .format('ogg')
-                    .save(oggPath)
+                    .audioFilters('volume=1.0')
+                    .format('opus')
+                    .save(outputFile)
                     .on('end', resolve)
                     .on('error', reject);
             });
 
-            // Send as voice note
-            await sock.sendMessage(toSendJid, {
-                audio: { url: oggPath },
+            // Send as voice note (PTT = true)
+            await this.bot.wa.sendMessage(msg.chat, {
+                audio: fs.readFileSync(outputFile),
                 mimetype: 'audio/ogg; codecs=opus',
                 ptt: true
-            }, { quoted: msg });
+            }, {
+                quoted: msg.key
+            });
 
-            // Cleanup
-            fs.unlinkSync(mp3Path);
-            fs.unlinkSync(oggPath);
+            // Clean up
+            fs.unlinkSync(inputFile);
+            fs.unlinkSync(outputFile);
 
-            return null; // Message already sent
+            return false; // Prevent showing final success message
         } catch (err) {
             console.error('Voice error:', err);
-            return '❌ *Failed to generate voice.*';
+            return '❌ Failed to generate voice note.';
         }
     }
 
     async init() {
-        console.log('Voice module loaded');
+        console.log('[✅] Voice module initialized');
     }
 
     async destroy() {
-        console.log('Voice module unloaded');
+        console.log('[❌] Voice module destroyed');
     }
 }
 
