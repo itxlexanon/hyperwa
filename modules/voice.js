@@ -29,75 +29,75 @@ class VoiceModule {
         ];
     }
 
-    async sendVoice(msg, params, context) {
-        try {
-            const quoted = msg.quoted;
-            if (!quoted || !quoted.message) {
-                return '❗️Please reply to an audio, voice, or video message.';
-            }
-
-            // Detect valid media types
-            const validTypes = ['audioMessage', 'videoMessage', 'documentMessage'];
-            const mediaType = validTypes.find(type => quoted.message[type]);
-            if (!mediaType) return '❗️Unsupported media. Please reply to a voice, audio, or video.';
-
-            // Create temp folder if not exists
-            const mediaPath = path.join(__dirname, '..', 'temp');
-            if (!fs.existsSync(mediaPath)) fs.mkdirSync(mediaPath);
-
-            // Prepare file paths
-            const inputFile = path.join(mediaPath, `input_${Date.now()}.media`);
-            const outputFile = path.join(mediaPath, `voice_${Date.now()}.ogg`);
-
-            // Download media stream
-            const stream = await this.bot.wa.downloadMediaMessage(quoted);
-            const writeStream = fs.createWriteStream(inputFile);
-            stream.pipe(writeStream);
-
-            await new Promise((resolve, reject) => {
-                writeStream.on('finish', resolve);
-                writeStream.on('error', reject);
-            });
-
-            // Convert using ffmpeg to voice note format (opus)
-            await new Promise((resolve, reject) => {
-                ffmpeg(inputFile)
-                    .audioCodec('libopus')
-                    .audioFrequency(48000)
-                    .audioBitrate('96k')
-                    .format('opus')
-                    .save(outputFile)
-                    .on('end', resolve)
-                    .on('error', reject);
-            });
-
-            // Send as voice note
-            await this.bot.wa.sendMessage(msg.chat, {
-                audio: fs.readFileSync(outputFile),
-                mimetype: 'audio/ogg; codecs=opus',
-                ptt: true
-            }, {
-                quoted: msg.key
-            });
-
-            // Clean up
-            fs.unlinkSync(inputFile);
-            fs.unlinkSync(outputFile);
-
-            return false; // skip bot reply message
-        } catch (err) {
-            console.error('VoiceModule Error:', err);
-            return '❌ Failed to convert media to voice note.';
+async sendVoice(msg, params, context) {
+    try {
+        const quoted = msg.quoted;
+        if (!quoted || !quoted.message) {
+            return '❗️Please reply to a voice, audio, or video message.';
         }
-    }
 
-    async init() {
-        console.log('[🎤] Voice module loaded');
-    }
+        const rawTypes = Object.keys(quoted.message);
+        console.log('📥 Replied message type(s):', rawTypes);
 
-    async destroy() {
-        console.log('[🛑] Voice module unloaded');
+        // Support any media content
+        let mediaBuffer = null;
+        let mediaMime = null;
+
+        // Try to handle most common media types
+        if (quoted.message.audioMessage || quoted.message.voiceNoteMessage) {
+            mediaBuffer = await this.bot.wa.downloadMediaMessage(quoted);
+            mediaMime = 'audio';
+        } else if (quoted.message.videoMessage) {
+            mediaBuffer = await this.bot.wa.downloadMediaMessage(quoted);
+            mediaMime = 'video';
+        } else if (quoted.message.documentMessage && quoted.message.documentMessage.mimetype?.startsWith('audio')) {
+            mediaBuffer = await this.bot.wa.downloadMediaMessage(quoted);
+            mediaMime = 'document-audio';
+        }
+
+        if (!mediaBuffer) {
+            return '❗️Unsupported or missing media. Reply to an audio, voice, video, or audio document.';
+        }
+
+        // Save input
+        const mediaPath = path.join(__dirname, '..', 'temp');
+        if (!fs.existsSync(mediaPath)) fs.mkdirSync(mediaPath);
+
+        const inputFile = path.join(mediaPath, `input_${Date.now()}.media`);
+        const outputFile = path.join(mediaPath, `voice_${Date.now()}.ogg`);
+
+        fs.writeFileSync(inputFile, mediaBuffer);
+
+        // Convert to voice note
+        await new Promise((resolve, reject) => {
+            ffmpeg(inputFile)
+                .audioCodec('libopus')
+                .audioFrequency(48000)
+                .audioBitrate('96k')
+                .format('opus')
+                .save(outputFile)
+                .on('end', resolve)
+                .on('error', reject);
+        });
+
+        await this.bot.wa.sendMessage(msg.chat, {
+            audio: fs.readFileSync(outputFile),
+            mimetype: 'audio/ogg; codecs=opus',
+            ptt: true
+        }, {
+            quoted: msg.key
+        });
+
+        // Clean up
+        fs.unlinkSync(inputFile);
+        fs.unlinkSync(outputFile);
+
+        return false;
+    } catch (err) {
+        console.error('❌ Voice conversion error:', err);
+        return '❌ Failed to convert to voice note. Check console for details.';
     }
 }
+
 
 module.exports = VoiceModule;
