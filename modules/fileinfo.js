@@ -1,9 +1,13 @@
 const path = require('path');
 const fs = require('fs-extra');
-const logger = require('..Core/logger');
+const logger = require('./logger');
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 
 class FileInfoModule {
     constructor(bot) {
+        if (!bot || !bot.messageHandler || !bot.sock) {
+            throw new Error('Invalid bot object: missing messageHandler or sock');
+        }
         this.bot = bot;
         this.name = 'fileinfo';
         this.metadata = {
@@ -60,7 +64,6 @@ class FileInfoModule {
                 text: '⏳ *File Info*\n\nFetching file metadata... Please wait...'
             });
 
-            const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
             const fileData = quotedMessage[fileType];
             const stream = await downloadContentFromMessage(fileData, fileType.replace('Message', '').toLowerCase());
             
@@ -70,7 +73,6 @@ class FileInfoModule {
             }
             const buffer = Buffer.concat(chunks);
 
-            // Extract metadata
             let metadataText = `📄 *File Details*\n\n`;
             metadataText += `🗂️ *Type*: ${fileType.replace('Message', '')}\n`;
             metadataText += `📜 *MIME Type*: ${fileData.mimeType || 'Unknown'}\n`;
@@ -111,17 +113,14 @@ class FileInfoModule {
 
             metadataText += `⏰ *Timestamp*: ${new Date(msg.messageTimestamp * 1000).toLocaleString()}\n`;
 
-            // Save file temporarily to check additional metadata if needed
             const tempPath = path.join(__dirname, '../temp', `${Date.now()}_${fileData.fileName || 'file'}`);
             await fs.ensureDir(path.dirname(tempPath));
             await fs.writeFile(tempPath, buffer);
             
-            // Add file system metadata
             const stats = await fs.stat(tempPath);
             metadataText += `📅 *Created*: ${stats.birthtime.toLocaleString()}\n`;
             metadataText += `🔄 *Modified*: ${stats.mtime.toLocaleString()}\n`;
 
-            // Clean up
             await fs.remove(tempPath);
 
             await context.bot.sock.sendMessage(context.sender, {
