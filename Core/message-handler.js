@@ -6,30 +6,11 @@ class MessageHandler {
     constructor(bot) {
         this.bot = bot;
         this.commandHandlers = new Map();
-        this.messageHooks = new Map();
     }
 
     registerCommandHandler(command, handler) {
         this.commandHandlers.set(command.toLowerCase(), handler);
         logger.debug(`📝 Registered command handler: ${command}`);
-    }
-
-    unregisterCommandHandler(command) {
-        this.commandHandlers.delete(command.toLowerCase());
-        logger.debug(`🗑️ Unregistered command handler: ${command}`);
-    }
-
-    registerMessageHook(hook, handler) {
-        if (!this.messageHooks.has(hook)) {
-            this.messageHooks.set(hook, []);
-        }
-        this.messageHooks.get(hook).push(handler);
-        logger.debug(`🪝 Registered message hook: ${hook}`);
-    }
-
-    unregisterMessageHook(hook) {
-        this.messageHooks.delete(hook);
-        logger.debug(`🗑️ Unregistered message hook: ${hook}`);
     }
 
     async handleMessages({ messages, type }) {
@@ -64,26 +45,13 @@ class MessageHandler {
             await this.handleNonCommandMessage(msg, text);
         }
 
-        // Execute message hooks
-        await this.executeMessageHooks('all', msg, text);
-
-        // Sync to Telegram if bridge is active
+        // FIXED: ALWAYS sync to Telegram if bridge is active (this was the main issue)
         if (this.bot.telegramBridge) {
             await this.bot.telegramBridge.syncMessage(msg, text);
         }
     }
 
-    async executeMessageHooks(hookType, msg, text) {
-        const hooks = this.messageHooks.get(hookType) || [];
-        for (const hook of hooks) {
-            try {
-                await hook(msg, text);
-            } catch (error) {
-                logger.error(`Error executing message hook ${hookType}:`, error);
-            }
-        }
-    }
-
+    // New method to check if message has media
     hasMedia(msg) {
         return !!(
             msg.message?.imageMessage ||
@@ -121,20 +89,19 @@ class MessageHandler {
         const participant = msg.key.participant || sender;
         const prefix = config.get('bot.prefix');
         
+        // Extract command and arguments
         const args = text.slice(prefix.length).trim().split(/\s+/);
         const command = args[0].toLowerCase();
         const params = args.slice(1);
 
-        // Debug sender info
-        logger.debug(`📥 Command received: ${command} from ${participant}`);
-
+        // Check permissions
         if (!this.checkPermissions(msg, command)) {
-            logger.debug(`🚫 User ${participant} not permitted to run ${command}`);
             return this.bot.sendMessage(sender, {
                 text: '❌ You don\'t have permission to use this command.'
             });
         }
 
+        // Check rate limits
         const userId = participant.split('@')[0];
         if (config.get('features.rateLimiting')) {
             const canExecute = await rateLimiter.checkCommandLimit(userId);
@@ -146,48 +113,38 @@ class MessageHandler {
             }
         }
 
+        // Execute command
         const handler = this.commandHandlers.get(command);
         if (handler) {
             try {
-                // FIXED: Don't auto-react here, let the handler or wrapper handle it
-                const result = await handler.execute(msg, params, {
+                await handler.execute(msg, params, {
                     bot: this.bot,
                     sender,
                     participant,
-                    isGroup: sender.endsWith('@g.us'),
-                    messageHandler: this
+                    isGroup: sender.endsWith('@g.us')
                 });
-
-                logger.debug(`✅ Command executed: ${command}`);
-
-                // Log to Telegram
+                logger.info(`✅ Command executed: ${command} by ${participant}`);
+                
+                // Log command to Telegram
                 if (this.bot.telegramBridge) {
                     await this.bot.telegramBridge.logToTelegram('📝 Command Executed', 
                         `Command: ${command}\nUser: ${participant}\nChat: ${sender}`);
                 }
-
             } catch (error) {
                 logger.error(`❌ Command failed: ${command}`, error);
-
+                await this.bot.sendMessage(sender, {
+                    text: `❌ Command failed: ${error.message}`
+                });
+                
+                // Log error to Telegram
                 if (this.bot.telegramBridge) {
                     await this.bot.telegramBridge.logToTelegram('❌ Command Error', 
                         `Command: ${command}\nError: ${error.message}\nUser: ${participant}`);
                 }
             }
         } else {
-            logger.debug(`❓ Unknown command: ${command}`);
-            
-            // React with question mark for unknown commands
-            try {
-                await this.bot.sock.sendMessage(sender, {
-                    react: { key: msg.key, text: '❓' }
-                });
-            } catch (e) {
-                logger.debug('❓ Failed to react unknown command:', e);
-            }
-
             await this.bot.sendMessage(sender, {
-                text: `❓ Unknown command: ${command}\nType *${prefix}help* for available commands.`
+                text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
             });
         }
     }
