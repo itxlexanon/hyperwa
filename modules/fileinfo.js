@@ -43,9 +43,7 @@ class FileInfoModule {
         try {
             const message = msg.message;
             if (!msg.quoted || !msg.quoted.message) {
-                return await context.bot.sendMessage(context.sender, {
-                    text: '❌ *File Info*\n\nPlease reply to a file (audio, video, voice, document, etc.) to get its details.'
-                });
+                return '❌ *File Info*\n\nPlease reply to a file (audio, video, voice, document, etc.) to get its details.';
             }
 
             const quotedMessage = msg.quoted.message;
@@ -59,9 +57,7 @@ class FileInfoModule {
 
             const fileType = fileTypes.find(type => quotedMessage[type]);
             if (!fileType) {
-                return await context.bot.sendMessage(context.sender, {
-                    text: '❌ *File Info*\n\nThe replied message does not contain a supported file type.'
-                });
+                return '❌ *File Info*\n\nThe replied message does not contain a supported file type.';
             }
 
             const fileData = quotedMessage[fileType];
@@ -123,7 +119,7 @@ class FileInfoModule {
 
             await fs.remove(tempPath);
 
-            return metadataText; // Return for smartErrorRespond to handle
+            return metadataText;
 
         } catch (error) {
             logger.error('Failed to fetch file details:', error);
