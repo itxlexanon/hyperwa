@@ -2,6 +2,8 @@ const path = require('path');
 const fs = require('fs-extra');
 const logger = require('./logger');
 const config = require('../config');
+const helpers = require('../utils/helpers');
+
 
 class ModuleLoader {
     constructor(bot) {
