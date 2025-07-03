@@ -14,7 +14,7 @@ class FileInfoModule {
             description: 'Provides detailed metadata for files (audio, video, voice, documents, etc.)',
             version: '1.0.0',
             author: 'Bot Developer',
-            category: 'Utility'
+            category: 'utility'
         };
         this.commands = [
             {
@@ -22,6 +22,10 @@ class FileInfoModule {
                 description: 'Show metadata of a replied file (audio, video, voice, document, etc.)',
                 usage: '.details (reply to a file)',
                 permissions: 'public',
+                ui: {
+                    processingText: '⏳ *Fetching File Info...*\n\n🔄 Processing file metadata...',
+                    errorText: '❌ *File Info Failed*'
+                },
                 execute: this.handleDetailsCommand.bind(this)
             }
         ];
@@ -59,10 +63,6 @@ class FileInfoModule {
                     text: '❌ *File Info*\n\nThe replied message does not contain a supported file type.'
                 });
             }
-
-            const processingMsg = await context.bot.sendMessage(context.sender, {
-                text: '⏳ *File Info*\n\nFetching file metadata... Please wait...'
-            });
 
             const fileData = quotedMessage[fileType];
             const stream = await downloadContentFromMessage(fileData, fileType.replace('Message', '').toLowerCase());
@@ -123,16 +123,11 @@ class FileInfoModule {
 
             await fs.remove(tempPath);
 
-            await context.bot.sock.sendMessage(context.sender, {
-                text: metadataText,
-                edit: processingMsg.key
-            });
+            return metadataText; // Return for smartErrorRespond to handle
 
         } catch (error) {
             logger.error('Failed to fetch file details:', error);
-            await context.bot.sendMessage(context.sender, {
-                text: `❌ *File Info Failed*\n\n🚫 Error: ${error.message}`
-            });
+            throw new Error(`Failed to fetch file details: ${error.message}`);
         }
     }
 }
