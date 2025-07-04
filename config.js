@@ -1,69 +1,77 @@
 
 class Config {
-    constructor() {
-        this.defaultConfig = {
-            bot: {
-                name: 'HyperWa',
-                company: 'Dawium Technologies',
-                prefix: '.',
-                version: '2.0.0',
-                owner: '923298784489@s.whatsapp.net',
-                clearAuthOnStart: false
-            },
-            // Feature toggles and configurations
-            features: {
-                mode: 'public', // Bot mode: 'public' or 'private'
-                autoViewStatus: true, // Automatically view WhatsApp status updates
-                customModules: true, // Enable loading of custom modules
-                rateLimiting: true, // Enable command rate limiting
-                telegramBridge: true, // Enable Telegram bridge integration
-                smartProcessing: true, // Enable smart message processing
-                editMessages: true, // Allow editing of sent messages
-                autoReact: true // Auto react to commands
-            },
-            mongo: {
-                uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
-                dbName: 'advancedwa'
-            },
-            apis: {
-                ninjas: 'YOUR_API_KEY',
-                weather: 'YOUR_WEATHER_KEY',
-                translate: ''
-            },
-            security: {
-                maxCommandsPerMinute: 10,
-                maxDownloadsPerHour: 20,
-                allowedDomains: ['youtube.com', 'instagram.com', 'tiktok.com'],
-                blockedUsers: []
-            },
-            telegram: {
-                enabled: true,
-                botToken: '7580382614:AAH30PW6TFmgRzbC7HUXIHQ35GpndbJOIEI',
-                chatId: '-1002287300661',
-                adminIds: [7580382614],
-                sudoUsers: [7580382614],
-                features: {
-                    topics: true,
-                    mediaSync: true,
-                    profilePicSync: true,
-                    callLogs: true,
-                    statusSync: true,
-                    biDirectional: true,
-                    presenceUpdates: true,
-                    readReceipts: true,
-                    animatedStickers: true
-                }
-            },
-            logging: {
-                level: 'info',
-                saveToFile: true,
-                maxFileSize: '10MB',
-                maxFiles: 5
-            }
-        };
+constructor() {
+    this.defaultConfig = {
+        bot: {
+            name: 'HyperWa',
+            company: 'Dawium Technologies',
+            prefix: '.',
+            version: '2.0.0',
+            owner: '923298784489@s.whatsapp.net',
+            clearAuthOnStart: false
+        },
+        admins: [
+            '923001112222',  // Just the number part, no "@s.whatsapp.net"
+            '923334445555'
+        ],  
 
-        this.load();
-    }
+        // Feature toggles and configurations
+        features: {
+            mode: 'public', // Bot mode: 'public' or 'private'
+            autoViewStatus: true, // Automatically view WhatsApp status updates
+            customModules: true, // Enable loading of custom modules
+            rateLimiting: true, // Enable command rate limiting
+            telegramBridge: true, // Enable Telegram bridge integration
+            smartProcessing: true, // Enable smart message processing
+            editMessages: true, // Allow editing of sent messages
+            autoReact: true, // Auto react to commands
+            respondToUnknownCommands: false,  // Bot send error message on wrong commands
+            sendPermissionError: false      // bot will send error message on comnd which are not allowed to users
+        },
+        mongo: {
+            uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
+            dbName: 'advancedwa'
+        },
+        apis: {
+            ninjas: 'YOUR_API_KEY',
+            weather: 'YOUR_WEATHER_KEY',
+            translate: ''
+        },
+        security: {
+            maxCommandsPerMinute: 10,
+            maxDownloadsPerHour: 20,
+            allowedDomains: ['youtube.com', 'instagram.com', 'tiktok.com'],
+            blockedUsers: []
+        },
+        telegram: {
+            enabled: true,
+            botToken: '7580382614:AAH30PW6TFmgRzbC7HUXIHQ35GpndbJOIEI',
+            chatId: '-1002287300661',
+            adminIds: [7580382614],
+            sudoUsers: [7580382614],
+            features: {
+                topics: true,
+                mediaSync: true,
+                profilePicSync: true,
+                callLogs: true,
+                statusSync: true,
+                biDirectional: true,
+                presenceUpdates: true,
+                readReceipts: true,
+                animatedStickers: true
+            }
+        },
+        logging: {
+            level: 'info',
+            saveToFile: true,
+            maxFileSize: '10MB',
+            maxFiles: 5
+        }
+    };
+
+    this.load();
+}
+
 
     load() {
         this.config = { ...this.defaultConfig };
