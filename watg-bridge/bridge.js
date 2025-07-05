@@ -23,6 +23,7 @@ class TelegramBridge {
         this.userMappings = new Map();
         this.contactMappings = new Map();
         this.profilePicCache = new Map();
+        this.profilePicUpdateCooldown = new Map();
         this.tempDir = path.join(__dirname, '../temp');
         this.isProcessing = false;
         this.activeCallNotifications = new Map();
@@ -36,7 +37,6 @@ class TelegramBridge {
         this.topicVerificationCache = new Map();
         this.pollingRetries = 0;
         this.maxPollingRetries = 5;
-        this.profilePicUpdateCooldown = new Map();
     }
 
     async initialize() {
@@ -227,7 +227,7 @@ class TelegramBridge {
                 { upsert: true }
             );
             this.profilePicCache.set(jid, url);
-            logger.debug(`✅ Saved profile pic URL: ${jid} -> ${url}`);
+            logger.debug(`✅ Saved profile pic URL: ${jid}`);
         } catch (error) {
             logger.error('❌ Failed to save profile pic URL:', error);
         }
@@ -310,6 +310,7 @@ class TelegramBridge {
             
             logger.info('📝 Updating Telegram topic names...');
             let updatedCount = 0;
+            let failedCount = 0;
             
             for (const [jid, topicId] of this.chatMappings.entries()) {
                 if (!jid.endsWith('@g.us') && jid !== 'status@broadcast' && jid !== 'call@broadcast') {
@@ -317,21 +318,47 @@ class TelegramBridge {
                     const contactName = this.contactMappings.get(phone) || `+${phone}`;
                     
                     try {
+                        // First verify the topic exists
+                        const exists = await this.verifyTopicExists(topicId);
+                        if (!exists) {
+                            logger.warn(`🗑️ Topic ${topicId} for ${phone} doesn't exist, removing from mapping`);
+                            this.chatMappings.delete(jid);
+                            await this.collection.deleteOne({ 
+                                type: 'chat', 
+                                'data.whatsappJid': jid 
+                            });
+                            failedCount++;
+                            continue;
+                        }
+
                         await this.telegramBot.editForumTopic(chatId, topicId, {
                             name: contactName
                         });
                         logger.debug(`📝 Updated topic name for ${phone} to ${contactName}`);
                         updatedCount++;
                     } catch (error) {
-                        logger.error(`❌ Failed to update topic ${topicId} for ${phone}:`, error);
+                        logger.error(`❌ Failed to update topic ${topicId} for ${phone}:`, error.message);
+                        failedCount++;
+                        
+                        // If topic doesn't exist, remove from mapping
+                        if (error.message.includes('not found') || error.message.includes('TOPIC_NOT_MODIFIED')) {
+                            logger.warn(`🗑️ Removing invalid topic mapping for ${jid}`);
+                            this.chatMappings.delete(jid);
+                            await this.collection.deleteOne({ 
+                                type: 'chat', 
+                                'data.whatsappJid': jid 
+                            });
+                        }
                     }
                     await new Promise(resolve => setTimeout(resolve, 100));
                 }
             }
             
-            logger.info(`✅ Updated ${updatedCount} topic names`);
+            logger.info(`✅ Topic update complete: ${updatedCount} updated, ${failedCount} failed/removed`);
+            return { updated: updatedCount, failed: failedCount };
         } catch (error) {
             logger.error('❌ Failed to update topic names:', error);
+            return { updated: 0, failed: 0 };
         }
     }
 
@@ -1024,18 +1051,29 @@ class TelegramBridge {
         }
     }
 
-    // FIXED: Profile picture sync with database storage
+    // FIXED: Profile picture sync with URL storage
     async sendProfilePicture(topicId, jid, isUpdate = false) {
         try {
             if (!config.get('telegram.features.profilePicSync')) return;
+            
+            // Check cooldown for this contact (5 minutes)
+            const now = Date.now();
+            const lastCheck = this.profilePicUpdateCooldown.get(jid) || 0;
+            if (now - lastCheck < 5 * 60 * 1000) {
+                logger.debug(`⏳ Profile pic check for ${jid} is on cooldown`);
+                return;
+            }
+            
+            this.profilePicUpdateCooldown.set(jid, now);
             
             const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
             
             if (profilePicUrl) {
                 // Check if we already have this URL in database
-                const cachedUrl = await this.getProfilePicUrl(jid);
-                if (cachedUrl === profilePicUrl && isUpdate) {
-                    logger.debug(`Profile picture URL unchanged for ${jid}, skipping`);
+                const existingUrl = await this.getProfilePicUrl(jid);
+                
+                if (existingUrl === profilePicUrl && !isUpdate) {
+                    logger.debug(`📸 Profile picture for ${jid} unchanged, skipping`);
                     return;
                 }
                 
@@ -1048,7 +1086,7 @@ class TelegramBridge {
                 
                 // Save URL to database
                 await this.saveProfilePicUrl(jid, profilePicUrl);
-                logger.info(`📸 Sent profile picture for ${jid} (${isUpdate ? 'update' : 'initial'})`);
+                logger.info(`📸 ${isUpdate ? 'Updated' : 'Sent'} profile picture for ${jid}`);
             }
         } catch (error) {
             logger.debug('Could not send profile picture:', error);
@@ -1433,21 +1471,35 @@ class TelegramBridge {
             }
 
             const statusJid = originalStatusKey.participant;
-            await this.whatsappBot.sendMessage('status@broadcast', { text: msg.text }, {
-                statusJidList: [statusJid]
-            });
+            
+            // FIXED: Proper status reply sending
+            const result = await this.whatsappBot.sock.sendMessage('status@broadcast', 
+                { text: msg.text }, 
+                { 
+                    statusJidList: [statusJid],
+                    backgroundColor: '#000000',
+                    font: 1
+                }
+            );
 
             const phone = statusJid.split('@')[0];
             const contactName = this.contactMappings.get(phone) || `+${phone}`;
             
-            await this.telegramBot.sendMessage(msg.chat.id, `✅ Status reply sent to ${contactName}`, {
-                message_thread_id: msg.message_thread_id
-            });
-            
-            await this.setReaction(msg.chat.id, msg.message_id, '✅');
+            if (result?.key?.id) {
+                await this.telegramBot.sendMessage(msg.chat.id, `✅ Status reply sent to ${contactName}`, {
+                    message_thread_id: msg.message_thread_id
+                });
+                await this.setReaction(msg.chat.id, msg.message_id, '✅');
+                logger.info(`✅ Status reply sent to ${contactName} (${statusJid})`);
+            } else {
+                throw new Error('No confirmation received');
+            }
             
         } catch (error) {
             logger.error('❌ Failed to handle status reply:', error);
+            await this.telegramBot.sendMessage(msg.chat.id, `❌ Failed to send status reply: ${error.message}`, {
+                message_thread_id: msg.message_thread_id
+            });
             await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
     }
@@ -1536,10 +1588,11 @@ class TelegramBridge {
                     break;
 
                 case 'video_note':
+                    // FIXED: Proper video note sending to WhatsApp
                     messageOptions = {
                         video: fs.readFileSync(filePath),
                         caption: caption,
-                        ptv: true,
+                        ptv: true, // This is the key for video notes
                         viewOnce: hasMediaSpoiler
                     };
                     break;
@@ -1581,7 +1634,7 @@ class TelegramBridge {
                     
                 case 'sticker':
                     await this.handleTelegramSticker(msg);
-                    return;
+                    return; // stop further handling, it's done inside handleTelegramSticker()
             }
 
             sendResult = await this.whatsappBot.sendMessage(whatsappJid, messageOptions);
@@ -1628,6 +1681,7 @@ class TelegramBridge {
 
             let outputBuffer;
 
+            // Detect animated sticker type
             const isAnimated = msg.sticker.is_animated || msg.sticker.is_video;
 
             if (isAnimated) {
@@ -1664,6 +1718,7 @@ class TelegramBridge {
             logger.error('❌ Failed to send sticker to WhatsApp:', err);
             await this.setReaction(chatId, msg.message_id, '❌');
 
+            // Fallback: send as photo
             const fallbackPath = path.join(this.tempDir, `fallback_${Date.now()}.png`);
             await sharp(stickerBuffer).resize(512, 512).png().toFile(fallbackPath);
             await this.telegramBot.sendPhoto(chatId, fallbackPath, {
@@ -1689,13 +1744,11 @@ class TelegramBridge {
                 .on('end', () => resolve(outputPath))
                 .on('error', (err) => {
                     logger.debug('Animated sticker conversion failed:', err.message);
-                    resolve(null);
+                    resolve(null); // fallback
                 })
                 .save(outputPath);
         });
     }
-
-
 
     async handleTelegramLocation(msg) {
         try {
@@ -1833,7 +1886,7 @@ class TelegramBridge {
             return;
         }
 
-        // FIXED: Combined contact update handler with rate limiting
+        // FIXED: Enhanced contact sync handlers with profile picture management
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             try {
                 let updatedCount = 0;
@@ -1866,34 +1919,13 @@ class TelegramBridge {
                             }
                         }
                     }
-
-                    // Profile picture update logic with rate limiting
+                    
+                    // Check for profile picture updates (with cooldown)
                     if (contact.id && this.chatMappings.has(contact.id)) {
-                        const now = Date.now();
-                        const lastUpdate = this.profilePicUpdateCooldown.get(contact.id) || 0;
-                        
-                        // Only check profile picture if it's been more than 5 minutes since last check
-                        if (now - lastUpdate > 5 * 60 * 1000) {
-                            this.profilePicUpdateCooldown.set(contact.id, now);
-                            
-                            const topicId = this.chatMappings.get(contact.id);
-                            
-                            try {
-                                const newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(contact.id, 'image');
-                                const oldProfilePicUrl = await this.getProfilePicUrl(contact.id);
-                                
-                                // Only send if URL actually changed
-                                if (newProfilePicUrl && newProfilePicUrl !== oldProfilePicUrl) {
-                                    await this.sendProfilePicture(topicId, contact.id, true);
-                                    logger.info(`📸 Profile picture updated for ${contact.id}`);
-                                }
-                            } catch (error) {
-                                logger.debug(`Could not check profile picture for ${contact.id}:`, error);
-                            }
-                        }
+                        const topicId = this.chatMappings.get(contact.id);
+                        await this.sendProfilePicture(topicId, contact.id, true);
                     }
                 }
-                
                 if (updatedCount > 0) {
                     logger.info(`✅ Processed ${updatedCount} contact updates`);
                 }
