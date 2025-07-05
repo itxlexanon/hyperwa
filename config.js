@@ -47,7 +47,7 @@ constructor() {
             enabled: true,
             botToken: '7580382614:AAH30PW6TFmgRzbC7HUXIHQ35GpndbJOIEI',
             chatId: '-1002287300661',
-            ownerId: 7580382614,
+            ownerId: 7405203657,
             sudoUsers: [7580382614],
             features: {
                 topics: true,
