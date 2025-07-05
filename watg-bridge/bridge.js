@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const TelegramCommands = require('./commands/TelegramCommands');
+const TelegramCommands = require('./commands');
 const config = require('../config');
 const logger = require('../Core/logger');
 const { connectDb } = require('../utils/db');
