@@ -83,6 +83,10 @@ class TelegramBridge {
                 await this.updateTopicNames();
             }, 5 * 60 * 1000);
             
+            setInterval(async () => {
+                await this.checkProfilePictureUpdates();
+            }, 10 * 60 * 1000);
+            
             logger.info('✅ Telegram bridge initialized');
         } catch (error) {
             logger.error('❌ Failed to initialize Telegram bridge:', error);
@@ -259,6 +263,18 @@ class TelegramBridge {
                         await this.saveContactMapping(phone, contactName);
                         syncedCount++;
                         logger.debug(`📞 Synced contact: ${phone} -> ${contactName}`);
+                        // Immediately update topic name for this contact
+                        if (this.chatMappings.has(jid)) {
+                            const topicId = this.chatMappings.get(jid);
+                            try {
+                                await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                    name: contactName
+                                });
+                                logger.info(`📝 Immediately updated topic name for ${phone} to ${contactName}`);
+                            } catch (error) {
+                                logger.debug(`Could not immediately update topic name for ${phone}:`, error);
+                            }
+                        }
                     }
                 }
             }
@@ -304,8 +320,9 @@ class TelegramBridge {
                         logger.debug(`📝 Updated topic name for ${phone} to ${contactName}`);
                         updatedCount++;
                     } catch (error) {
-                        logger.error(`❌ Failed to update topic ${topicId} for ${phone}:`, error);
-                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        logger.error(`❌ Failed to update topic ${topicId} for ${phone}: ${error.message}`);
+                        // Retry with exponential backoff
+                        await new Promise(resolve => setTimeout(resolve, 2000));
                         try {
                             await this.telegramBot.editForumTopic(chatId, topicId, {
                                 name: contactName
@@ -313,7 +330,7 @@ class TelegramBridge {
                             logger.debug(`📝 Retried and updated topic name for ${phone} to ${contactName}`);
                             updatedCount++;
                         } catch (retryError) {
-                            logger.error(`❌ Retry failed for topic ${topicId} for ${phone}:`, retryError);
+                            logger.error(`❌ Retry failed for topic ${topicId} for ${phone}: ${retryError.message}`);
                         }
                     }
                     await new Promise(resolve => setTimeout(resolve, 100));
@@ -323,6 +340,36 @@ class TelegramBridge {
             logger.info(`✅ Updated ${updatedCount} topic names`);
         } catch (error) {
             logger.error('❌ Failed to update topic names:', error);
+        }
+    }
+
+    async checkProfilePictureUpdates() {
+        try {
+            logger.info('📸 Checking for profile picture updates...');
+            let updatedCount = 0;
+            
+            for (const [jid, topicId] of this.chatMappings.entries()) {
+                if (!jid.endsWith('@g.us') && jid !== 'status@broadcast' && jid !== 'call@broadcast') {
+                    try {
+                        const newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image').catch(() => null);
+                        const cacheEntry = this.profilePicCache.get(jid) || {};
+                        const oldProfilePicUrl = cacheEntry.url;
+
+                        if (newProfilePicUrl && newProfilePicUrl !== oldProfilePicUrl) {
+                            await this.sendProfilePicture(topicId, jid, true, jid);
+                            logger.info(`📸 Detected and sent updated profile picture for ${jid}`);
+                            updatedCount++;
+                        }
+                    } catch (error) {
+                        logger.debug(`Could not check profile picture for ${jid}:`, error);
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+            }
+            
+            logger.info(`✅ Checked profile pictures, updated ${updatedCount}`);
+        } catch (error) {
+            logger.error('❌ Failed to check profile picture updates:', error);
         }
     }
 
@@ -339,34 +386,34 @@ class TelegramBridge {
         }
     }
 
-async setupTelegramHandlers() {
-    this.telegramBot.on('polling_error', (error) => {
-        this.pollingRetries++;
-        logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
-        
-        if (this.pollingRetries >= this.maxPollingRetries) {
-            logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
-            this.restartTelegramBot();
-        }
-    });
+    async setupTelegramHandlers() {
+        this.telegramBot.on('polling_error', (error) => {
+            this.pollingRetries++;
+            logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
+            
+            if (this.pollingRetries >= this.maxPollingRetries) {
+                logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
+                this.restartTelegramBot();
+            }
+        });
 
-    this.telegramBot.on('error', (error) => {
-        logger.error('Telegram bot error:', error);
-    });
+        this.telegramBot.on('error', (error) => {
+            logger.error('Telegram bot error:', error);
+        });
 
-    this.telegramBot.on('message', this.wrapHandler(async (msg) => {
-        this.pollingRetries = 0;
-        
-        if (msg.chat.type === 'private') {
-            this.botChatId = msg.chat.id;
-            await this.commands.handleCommand(msg);
-        } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
-            await this.handleTelegramMessage(msg);
-        }
-    }));
+        this.telegramBot.on('message', this.wrapHandler(async (msg) => {
+            this.pollingRetries = 0;
+            
+            if (msg.chat.type === 'private') {
+                this.botChatId = msg.chat.id;
+                await this.commands.handleCommand(msg);
+            } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
+                await this.handleTelegramMessage(msg);
+            }
+        }));
 
-    logger.info('📱 Telegram message handlers set up');
-}
+        logger.info('📱 Telegram message handlers set up');
+    }
 
     async restartTelegramBot() {
         try {
@@ -472,7 +519,7 @@ async setupTelegramHandlers() {
             }, 10000);
             
         } catch (error) {
-            logger.error('❌ Failed借款 to send QR code to Telegram:', error);
+            logger.error('❌ Failed to send QR code to Telegram:', error);
         }
     }
 
@@ -984,16 +1031,23 @@ async setupTelegramHandlers() {
 
     async sendProfilePicture(topicId, jid, isUpdate = false, participant) {
         try {
-            if (!config.get('telegram.features.profilePicSync')) return;
+            if (!config.get('telegram.features.profilePicSync')) {
+                logger.debug('Profile picture sync disabled');
+                return;
+            }
 
             const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image').catch(() => null);
-            if (!profilePicUrl) return;
+            if (!profilePicUrl) {
+                logger.debug(`No profile picture available for ${jid}`);
+                return;
+            }
 
             const cacheEntry = this.profilePicCache.get(jid) || {};
             const lastSent = cacheEntry.lastSent || 0;
             const now = Date.now();
 
-            if (cacheEntry.url === profilePicUrl && now - lastSent < 24 * 60 * 60 * 1000 && !isUpdate) {
+            // Skip cache check for updates to ensure changed pictures are sent
+            if (!isUpdate && cacheEntry.url === profilePicUrl && now - lastSent < 24 * 60 * 60 * 1000) {
                 logger.debug(`Skipped sending profile picture for ${jid}: already sent recently`);
                 return;
             }
@@ -1014,7 +1068,7 @@ async setupTelegramHandlers() {
 
             logger.info(`📸 Sent profile picture for ${jid} (isUpdate: ${isUpdate})`);
         } catch (error) {
-            logger.debug(`Could not send profile picture for ${jid}:`, error);
+            logger.error(`❌ Could not send profile picture for ${jid}: ${error.message}`);
         }
     }
 
@@ -1391,21 +1445,30 @@ async setupTelegramHandlers() {
             }
 
             const statusJid = originalStatusKey.participant;
-            await this.whatsappBot.sendMessage('status@broadcast', { text: msg.text }, {
-                statusJidList: [statusJid]
-            });
-
             const phone = statusJid.split('@')[0];
             const contactName = this.contactMappings.get(phone) || `+${phone}`;
-            
-            await this.telegramBot.sendMessage(msg.chat.id, `✅ Status reply sent to ${contactName}`, {
-                message_thread_id: msg.message_thread_id
+
+            // Send reply as a direct message to the user, quoting the original status
+            const sendResult = await this.whatsappBot.sendMessage(statusJid, {
+                text: msg.text,
+                quoted: originalStatusKey
             });
-            
-            await this.setReaction(msg.chat.id, msg.message_id, '✅');
+
+            if (sendResult?.key?.id) {
+                await this.telegramBot.sendMessage(msg.chat.id, `✅ Status reply sent to ${contactName}`, {
+                    message_thread_id: msg.message_thread_id
+                });
+                await this.setReaction(msg.chat.id, msg.message_id, '✅');
+                logger.info(`✅ Sent status reply to ${statusJid} for ${contactName}`);
+            } else {
+                throw new Error('Failed to send status reply');
+            }
             
         } catch (error) {
             logger.error('❌ Failed to handle status reply:', error);
+            await this.telegramBot.sendMessage(msg.chat.id, `❌ Failed to send reply to ${contactName}`, {
+                message_thread_id: msg.message_thread_id
+            });
             await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
     }
@@ -1420,7 +1483,7 @@ async setupTelegramHandlers() {
                 return;
             }
 
-            await this.sendPresence(whatsappJid, false);
+            await this.sendPresence(whatsappJid, 'composing');
 
             let fileId, fileName, caption = msg.caption || '';
             
@@ -1703,7 +1766,7 @@ async setupTelegramHandlers() {
 
             const vcard = `BEGIN:VCARD\nVERSION:3.0\nN:${lastName};${firstName};;;\nFN:${displayName}\nTEL;TYPE=CELL:${phoneNumber}\nEND:VCARD`;
 
-            const sendResult = await this.whatsappBot.sendMessage(whatsappJiv, { 
+            const sendResult = await this.whatsappBot.sendMessage(whatsappJid, { 
                 contacts: { 
                     displayName: displayName, 
                     contacts: [{ vcard: vcard }]
@@ -1809,9 +1872,9 @@ async setupTelegramHandlers() {
                                     await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
                                         name: contact.name
                                     });
-                                    logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
+                                    logger.info(`📝 Immediately updated topic name for ${phone} to ${contact.name}`);
                                 } catch (error) {
-                                    logger.debug(`Could not update topic name for ${phone}:`, error);
+                                    logger.error(`❌ Could not update topic name for ${phone}: ${error.message}`);
                                 }
                             }
                         }
@@ -1828,7 +1891,7 @@ async setupTelegramHandlers() {
                                     logger.info(`📸 Profile picture updated for ${contact.id}`);
                                 }
                             } catch (error) {
-                                logger.debug(`Could not check profile picture for ${contact.id}:`, error);
+                                logger.error(`❌ Could not check profile picture for ${contact.id}: ${error.message}`);
                             }
                         }
                     }
@@ -1859,6 +1922,7 @@ async setupTelegramHandlers() {
                 }
                 if (newCount > 0) {
                     logger.info(`✅ Added ${newCount} new contacts`);
+                    await this.updateTopicNames();
                 }
             } catch (error) {
                 logger.error('❌ Failed to process new contacts:', error);
