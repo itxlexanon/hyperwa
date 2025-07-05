@@ -1412,166 +1412,167 @@ async handleStatusReply(msg) {
     }
 }
 
-    async handleTelegramMedia(msg, mediaType) {
-        try {
-            const topicId = msg.message_thread_id;
-            const whatsappJid = this.findWhatsAppJidByTopic(topicId);
-            
-            if (!whatsappJid) {
-                logger.warn('⚠️ Could not find WhatsApp chat for Telegram media');
+async handleTelegramMedia(msg, mediaType) {
+    try {
+        const topicId = msg.message_thread_id;
+        const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        
+        if (!whatsappJid) {
+            logger.warn('⚠️ Could not find WhatsApp chat for Telegram media');
+            return;
+        }
+
+        await this.sendPresence(whatsappJid, false);
+
+        let fileId, fileName, caption = msg.caption || '';
+
+        switch (mediaType) {
+            case 'photo':
+                fileId = msg.photo[msg.photo.length - 1].file_id;
+                fileName = `photo_${Date.now()}.jpg`;
+                break;
+            case 'video':
+                fileId = msg.video.file_id;
+                fileName = `video_${Date.now()}.mp4`;
+                break;
+            case 'animation':
+                fileId = msg.animation.file_id;
+                fileName = `animation_${Date.now()}.mp4`;
+                break;
+            case 'video_note':
+                fileId = msg.video_note.file_id;
+                fileName = `video_note_${Date.now()}.mp4`;
+                break;
+            case 'voice':
+                fileId = msg.voice.file_id;
+                fileName = `voice_${Date.now()}.ogg`;
+                break;
+            case 'audio':
+                fileId = msg.audio.file_id;
+                fileName = msg.audio.file_name || `audio_${Date.now()}.mp3`;
+                break;
+            case 'document':
+                fileId = msg.document.file_id;
+                fileName = msg.document.file_name || `document_${Date.now()}`;
+                break;
+            case 'sticker':
+                fileId = msg.sticker.file_id;
+                fileName = `sticker_${Date.now()}.webp`;
+                break;
+        }
+
+        logger.info(`📥 Downloading ${mediaType} from Telegram: ${fileName}`);
+
+        const fileLink = await this.telegramBot.getFileLink(fileId);
+        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data);
+        
+        const filePath = path.join(this.tempDir, fileName);
+        await fs.writeFile(filePath, buffer);
+
+        logger.info(`💾 Saved ${mediaType} to: ${filePath} (${buffer.length} bytes)`);
+
+        let messageOptions = {};
+
+        const hasMediaSpoiler = msg.has_media_spoiler || 
+            (msg.caption_entities && msg.caption_entities.some(entity => entity.type === 'spoiler'));
+
+        switch (mediaType) {
+            case 'photo':
+                messageOptions = {
+                    image: fs.readFileSync(filePath),
+                    caption: caption,
+                    viewOnce: hasMediaSpoiler
+                };
+                break;
+                
+            case 'video':
+                messageOptions = {
+                    video: fs.readFileSync(filePath),
+                    caption: caption,
+                    viewOnce: hasMediaSpoiler
+                };
+                break;
+
+            case 'video_note':
+                messageOptions = {
+                    video: fs.readFileSync(filePath),
+                    caption: caption,
+                    ptv: true,
+                    viewOnce: hasMediaSpoiler
+                };
+                break;
+
+            case 'animation':
+                messageOptions = {
+                    video: fs.readFileSync(filePath),
+                    caption: caption,
+                    gifPlayback: true,
+                    viewOnce: hasMediaSpoiler
+                };
+                break;
+                
+            case 'voice':
+                messageOptions = {
+                    audio: fs.readFileSync(filePath),
+                    ptt: true,
+                    mimetype: 'audio/ogg; codecs=opus'
+                };
+                break;
+                
+            case 'audio':
+                messageOptions = {
+                    audio: fs.readFileSync(filePath),
+                    mimetype: mime.lookup(fileName) || 'audio/mp3',
+                    fileName: fileName,
+                    caption: caption
+                };
+                break;
+                
+            case 'document':
+                messageOptions = {
+                    document: fs.readFileSync(filePath),
+                    fileName: fileName,
+                    mimetype: mime.lookup(fileName) || 'application/octet-stream',
+                    caption: caption
+                };
+                break;
+                
+            case 'sticker':
+                await this.handleTelegramSticker(msg);
                 return;
-            }
+        }
 
-            await this.sendPresence(whatsappJid, false);
+        // QUOTING support
+        const quoted = msg.__waQuoted || (
+            msg.reply_to_message ? this.tgToWa.get(msg.reply_to_message.message_id) : null
+        );
 
-            let fileId, fileName, caption = msg.caption || '';
-            
-            switch (mediaType) {
-                case 'photo':
-                    fileId = msg.photo[msg.photo.length - 1].file_id;
-                    fileName = `photo_${Date.now()}.jpg`;
-                    break;
-                case 'video':
-                    fileId = msg.video.file_id;
-                    fileName = `video_${Date.now()}.mp4`;
-                    break;
-                case 'animation':
-                    fileId = msg.animation.file_id;
-                    fileName = `animation_${Date.now()}.mp4`;
-                    break;
-                case 'video_note':
-                    fileId = msg.video_note.file_id;
-                    fileName = `video_note_${Date.now()}.mp4`;
-                    break;
-                case 'voice':
-                    fileId = msg.voice.file_id;
-                    fileName = `voice_${Date.now()}.ogg`;
-                    break;
-                case 'audio':
-                    fileId = msg.audio.file_id;
-                    fileName = msg.audio.file_name || `audio_${Date.now()}.mp3`;
-                    break;
-                case 'document':
-                    fileId = msg.document.file_id;
-                    fileName = msg.document.file_name || `document_${Date.now()}`;
-                    break;
-                case 'sticker':
-                    fileId = msg.sticker.file_id;
-                    fileName = `sticker_${Date.now()}.webp`;
-                    break;
-            }
+        // Send to WhatsApp with quoting (if applicable)
+        const sendResult = await this.whatsappBot.sendMessage(
+            whatsappJid,
+            messageOptions,
+            quoted ? { quoted } : {}
+        );
 
-            logger.info(`📥 Downloading ${mediaType} from Telegram: ${fileName}`);
+        await fs.unlink(filePath).catch(() => {});
 
-            const fileLink = await this.telegramBot.getFileLink(fileId);
-            const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-            const buffer = Buffer.from(response.data);
-            
-            const filePath = path.join(this.tempDir, fileName);
-            await fs.writeFile(filePath, buffer);
-
-            logger.info(`💾 Saved ${mediaType} to: ${filePath} (${buffer.length} bytes)`);
-
-            let sendResult;
-            let messageOptions = {};
-
-            const hasMediaSpoiler = msg.has_media_spoiler || 
-                (msg.caption_entities && msg.caption_entities.some(entity => entity.type === 'spoiler'));
-
-            switch (mediaType) {
-                case 'photo':
-                    messageOptions = {
-                        image: fs.readFileSync(filePath),
-                        caption: caption,
-                        viewOnce: hasMediaSpoiler
-                    };
-                    break;
-                    
-                case 'video':
-                    messageOptions = {
-                        video: fs.readFileSync(filePath),
-                        caption: caption,
-                        viewOnce: hasMediaSpoiler
-                    };
-                    break;
-
-                case 'video_note':
-                    // FIXED: Proper video note sending to WhatsApp
-                    messageOptions = {
-                        video: fs.readFileSync(filePath),
-                        caption: caption,
-                        ptv: true, // This is the key for video notes
-                        viewOnce: hasMediaSpoiler
-                    };
-                    break;
-
-                case 'animation':
-                    messageOptions = {
-                        video: fs.readFileSync(filePath),
-                        caption: caption,
-                        gifPlayback: true,
-                        viewOnce: hasMediaSpoiler
-                    };
-                    break;
-                    
-                case 'voice':
-                    messageOptions = {
-                        audio: fs.readFileSync(filePath),
-                        ptt: true,
-                        mimetype: 'audio/ogg; codecs=opus'
-                    };
-                    break;
-                    
-                case 'audio':
-                    messageOptions = {
-                        audio: fs.readFileSync(filePath),
-                        mimetype: mime.lookup(fileName) || 'audio/mp3',
-                        fileName: fileName,
-                        caption: caption
-                    };
-                    break;
-                    
-                case 'document':
-                    messageOptions = {
-                        document: fs.readFileSync(filePath),
-                        fileName: fileName,
-                        mimetype: mime.lookup(fileName) || 'application/octet-stream',
-                        caption: caption
-                    };
-                    break;
-                    
-                case 'sticker':
-                    await this.handleTelegramSticker(msg);
-                    return; // stop further handling, it's done inside handleTelegramSticker()
-            }
-
-/* QUOTING support */
-const quoted = msg.__waQuoted || (
-    msg.reply_to_message ? this.tgToWa.get(msg.reply_to_message.message_id) : null
-);
-
-/* finally push to WhatsApp */
-const sendResult = await this.whatsappBot.sendMessage(
-    whatsappJid,
-    messageOptions,
-    quoted ? { quoted } : {}
-);
-
-await fs.unlink(filePath).catch(() => {});
-
-if (sendResult?.key?.id) {
-    this.tgToWa.set(msg.message_id, sendResult.key);
-    this.waToTg.set(sendResult.key.id, msg.message_id);
-    await this.setReaction(msg.chat.id, msg.message_id, '👍');
-    setTimeout(() => this.markAsRead(whatsappJid, [sendResult.key]), 1_000);
-} else {
-    await this.setReaction(msg.chat.id, msg.message_id, '❌');
-}
-        } catch (error) {
-            logger.error(`❌ Failed to handle Telegram ${mediaType}:`, error);
+        if (sendResult?.key?.id) {
+            logger.info(`✅ Successfully sent ${mediaType} to WhatsApp`);
+            this.tgToWa.set(msg.message_id, sendResult.key);
+            this.waToTg.set(sendResult.key.id, msg.message_id);
+            await this.setReaction(msg.chat.id, msg.message_id, '👍');
+            setTimeout(() => this.markAsRead(whatsappJid, [sendResult.key]), 1000);
+        } else {
+            logger.warn(`⚠️ Failed to send ${mediaType} to WhatsApp - no message ID`);
             await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
+
+    } catch (error) {
+        logger.error(`❌ Failed to handle Telegram ${mediaType}:`, error);
+        await this.setReaction(msg.chat.id, msg.message_id, '❌');
     }
+}
 
     async handleTelegramSticker(msg) {
         const topicId = msg.message_thread_id;
