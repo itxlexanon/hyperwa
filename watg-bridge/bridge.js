@@ -259,11 +259,12 @@ class TelegramBridge {
                 
                 if (contactName && contactName.length > 2) {
                     const existingName = this.contactMappings.get(phone);
-                    if (existingName !== contactName) {
+                    const normalizedExisting = existingName?.toLowerCase().trim();
+                    const normalizedNew = contactName.toLowerCase().trim();
+                    if (normalizedExisting !== normalizedNew) {
                         await this.saveContactMapping(phone, contactName);
                         syncedCount++;
                         logger.debug(`📞 Synced contact: ${phone} -> ${contactName}`);
-                        // Immediately update topic name for this contact
                         if (this.chatMappings.has(jid)) {
                             const topicId = this.chatMappings.get(jid);
                             try {
@@ -272,7 +273,16 @@ class TelegramBridge {
                                 });
                                 logger.info(`📝 Immediately updated topic name for ${phone} to ${contactName}`);
                             } catch (error) {
-                                logger.debug(`Could not immediately update topic name for ${phone}:`, error);
+                                logger.error(`❌ Could not update topic name for ${phone}: ${error.message}`);
+                                await new Promise(resolve => setTimeout(resolve, 2000));
+                                try {
+                                    await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                        name: contactName
+                                    });
+                                    logger.info(`📝 Retried and updated topic name for ${phone} to ${contactName}`);
+                                } catch (retryError) {
+                                    logger.error(`❌ Retry failed for topic ${topicId}: ${retryError.message}`);
+                                }
                             }
                         }
                     }
@@ -321,7 +331,6 @@ class TelegramBridge {
                         updatedCount++;
                     } catch (error) {
                         logger.error(`❌ Failed to update topic ${topicId} for ${phone}: ${error.message}`);
-                        // Retry with exponential backoff
                         await new Promise(resolve => setTimeout(resolve, 2000));
                         try {
                             await this.telegramBot.editForumTopic(chatId, topicId, {
@@ -350,18 +359,30 @@ class TelegramBridge {
             
             for (const [jid, topicId] of this.chatMappings.entries()) {
                 if (!jid.endsWith('@g.us') && jid !== 'status@broadcast' && jid !== 'call@broadcast') {
+                    let newProfilePicUrl = null;
                     try {
-                        const newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image').catch(() => null);
+                        newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+                    } catch (error) {
+                        logger.debug(`Could not fetch profile picture for ${jid}: ${error.message}`);
+                        // Retry once after a short delay
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        try {
+                            newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+                        } catch (retryError) {
+                            logger.debug(`Retry failed for profile picture of ${jid}: ${retryError.message}`);
+                            continue;
+                        }
+                    }
+
+                    if (newProfilePicUrl) {
                         const cacheEntry = this.profilePicCache.get(jid) || {};
                         const oldProfilePicUrl = cacheEntry.url;
 
-                        if (newProfilePicUrl && newProfilePicUrl !== oldProfilePicUrl) {
+                        if (newProfilePicUrl !== oldProfilePicUrl) {
                             await this.sendProfilePicture(topicId, jid, true, jid);
                             logger.info(`📸 Detected and sent updated profile picture for ${jid}`);
                             updatedCount++;
                         }
-                    } catch (error) {
-                        logger.debug(`Could not check profile picture for ${jid}:`, error);
                     }
                     await new Promise(resolve => setTimeout(resolve, 100));
                 }
@@ -741,6 +762,7 @@ class TelegramBridge {
                 });
                 
                 this.statusMessageMapping.set(sentMsg.message_id, whatsappMsg.key);
+                logger.debug(`📍 Mapped status message ${sentMsg.message_id} to ${whatsappMsg.key.id}`);
             }
             
             if (config.get('features.autoViewStatus')) {
@@ -785,10 +807,16 @@ class TelegramBridge {
                         parse_mode: 'Markdown'
                     });
                     break;
+                case 'sticker':
+                    sentMsg = await this.telegramBot.sendSticker(chatId, buffer, {
+                        message_thread_id: topicId
+                    });
+                    break;
             }
             
             if (sentMsg) {
                 this.statusMessageMapping.set(sentMsg.message_id, whatsappMsg.key);
+                logger.debug(`📍 Mapped status media ${sentMsg.message_id} to ${whatsappMsg.key.id}`);
             }
             
         } catch (error) {
@@ -798,6 +826,7 @@ class TelegramBridge {
                 parse_mode: 'Markdown'
             });
             this.statusMessageMapping.set(sentMsg.message_id, whatsappMsg.key);
+            logger.debug(`📍 Mapped fallback status message ${sentMsg.message_id} to ${whatsappMsg.key.id}`);
         }
     }
 
@@ -1036,7 +1065,21 @@ class TelegramBridge {
                 return;
             }
 
-            const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image').catch(() => null);
+            let profilePicUrl = null;
+            try {
+                profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+            } catch (error) {
+                logger.debug(`Could not fetch profile picture for ${jid}: ${error.message}`);
+                // Retry once
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                try {
+                    profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+                } catch (retryError) {
+                    logger.debug(`Retry failed for profile picture of ${jid}: ${retryError.message}`);
+                    return;
+                }
+            }
+
             if (!profilePicUrl) {
                 logger.debug(`No profile picture available for ${jid}`);
                 return;
@@ -1046,22 +1089,41 @@ class TelegramBridge {
             const lastSent = cacheEntry.lastSent || 0;
             const now = Date.now();
 
-            // Skip cache check for updates to ensure changed pictures are sent
+            // Always send for updates or if no previous send
             if (!isUpdate && cacheEntry.url === profilePicUrl && now - lastSent < 24 * 60 * 60 * 1000) {
                 logger.debug(`Skipped sending profile picture for ${jid}: already sent recently`);
                 return;
             }
 
             const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
-            await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
-                message_thread_id: topicId,
-                caption: caption
-            });
+            try {
+                await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
+                    message_thread_id: topicId,
+                    caption: caption
+                });
+            } catch (error) {
+                logger.error(`❌ Failed to send profile picture for ${jid}: ${error.message}`);
+                // Retry once
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                try {
+                    await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
+                        message_thread_id: topicId,
+                        caption: caption
+                    });
+                } catch (retryError) {
+                    logger.error(`❌ Retry failed to send profile picture for ${jid}: ${retryError.message}`);
+                    return;
+                }
+            }
 
             this.profilePicCache.set(jid, { url: profilePicUrl, lastSent: now });
 
-            // Update user mapping with profile picture URL
-            const userData = this.userMappings.get(participant) || {};
+            const userData = this.userMappings.get(participant) || {
+                name: this.contactMappings.get(jid.split('@')[0]) || null,
+                phone: jid.split('@')[0],
+                firstSeen: new Date(),
+                messageCount: 0
+            };
             userData.profilePicUrl = profilePicUrl;
             userData.lastSent = now;
             await this.saveUserMapping(participant, userData);
@@ -1448,11 +1510,17 @@ class TelegramBridge {
             const phone = statusJid.split('@')[0];
             const contactName = this.contactMappings.get(phone) || `+${phone}`;
 
-            // Send reply as a direct message to the user, quoting the original status
-            const sendResult = await this.whatsappBot.sendMessage(statusJid, {
+            const messageOptions = {
                 text: msg.text,
-                quoted: originalStatusKey
-            });
+                contextInfo: {
+                    quotedMessage: originalStatusKey.message,
+                    stanzaId: originalStatusKey.id,
+                    participant: originalStatusKey.participant,
+                    remoteJid: 'status@broadcast'
+                }
+            };
+
+            const sendResult = await this.whatsappBot.sendMessage(statusJid, messageOptions);
 
             if (sendResult?.key?.id) {
                 await this.telegramBot.sendMessage(msg.chat.id, `✅ Status reply sent to ${contactName}`, {
@@ -1856,11 +1924,13 @@ class TelegramBridge {
                     if (contact.id && contact.name) {
                         const phone = contact.id.split('@')[0];
                         const oldName = this.contactMappings.get(phone);
+                        const normalizedOldName = oldName?.toLowerCase().trim();
+                        const normalizedNewName = contact.name.toLowerCase().trim();
                         
                         if (contact.name !== phone && 
                             !contact.name.startsWith('+') && 
                             contact.name.length > 2 &&
-                            oldName !== contact.name) {
+                            normalizedOldName !== normalizedNewName) {
                             await this.saveContactMapping(phone, contact.name);
                             logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
                             updatedCount++;
@@ -1874,6 +1944,14 @@ class TelegramBridge {
                                     });
                                     logger.info(`📝 Immediately updated topic name for ${phone} to ${contact.name}`);
                                 } catch (error) {
+                                    logger.error(`❌ Could not update topic name for ${phone}: ${error.message}`);
+                                    await new Promise(resolve => setTimeout(resolve, 2000));
+                                    try {
+                                        await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                            name: contact.name
+                                        });
+                                        logger.info(`📝 Retried and updated topic name for ${phone} to ${contact.name}`);
+                                   } catch (error) {
                                     logger.error(`❌ Could not update topic name for ${phone}: ${error.message}`);
                                 }
                             }
