@@ -1193,24 +1193,20 @@ case 'sticker':
     const isAnimated = stickerMessage.isAnimated || 
                       (stickerMessage.mimetype && stickerMessage.mimetype.includes('animated')) ||
                       (mediaMessage.url && mediaMessage.url.includes('animated'));
-    
+
     if (isAnimated) {
-        // Handle animated sticker
         try {
-            // Try sending as video/animation first
             await this.telegramBot.sendAnimation(chatId, filePath, {
                 message_thread_id: topicId,
                 caption: caption || 'Animated Sticker'
             });
         } catch (error) {
             logger.debug('Failed to send as animation, trying as sticker:', error);
-            // Fallback to regular sticker
             await this.telegramBot.sendSticker(chatId, filePath, {
                 message_thread_id: topicId
             });
         }
     } else {
-        // Handle static sticker (existing code)
         try {
             await this.telegramBot.sendSticker(chatId, filePath, {
                 message_thread_id: topicId
@@ -1219,7 +1215,7 @@ case 'sticker':
             logger.debug('Failed to send as sticker, converting to PNG:', stickerError);
             const pngPath = filePath.replace('.webp', '.png');
             await sharp(filePath).png().toFile(pngPath);
-            
+
             await this.telegramBot.sendPhoto(chatId, pngPath, {
                 message_thread_id: topicId,
                 caption: caption || 'Sticker'
@@ -1228,6 +1224,7 @@ case 'sticker':
         }
     }
     break;
+
 
             logger.info(`✅ Successfully sent ${mediaType} to Telegram`);
             await fs.unlink(filePath).catch(() => {});
