@@ -23,7 +23,6 @@ class TelegramBridge {
         this.userMappings = new Map();
         this.contactMappings = new Map();
         this.profilePicCache = new Map();
-        this._lastPicPush    = Object.create(null); // jid ➜ ts
         this.tempDir = path.join(__dirname, '../temp');
         this.isProcessing = false;
         this.activeCallNotifications = new Map();
@@ -157,34 +156,31 @@ class TelegramBridge {
         }
     }
 
-async saveUserMapping(whatsappId, userData) {
-    try {
-        await this.collection.updateOne(
-            { type: 'user', 'data.whatsappId': whatsappId },
-            { 
-                $set: { 
-                    type: 'user',
-                    data: { 
-                        whatsappId,
-                        name: userData.name,
-                        phone: userData.phone,
-                        firstSeen: userData.firstSeen,
-                        messageCount: userData.messageCount || 0,
-                        lastSeen: new Date(),
-                        lastProfilePicUrl: userData.lastProfilePicUrl || null  // ← Add this line
+    async saveUserMapping(whatsappId, userData) {
+        try {
+            await this.collection.updateOne(
+                { type: 'user', 'data.whatsappId': whatsappId },
+                { 
+                    $set: { 
+                        type: 'user',
+                        data: { 
+                            whatsappId,
+                            name: userData.name,
+                            phone: userData.phone,
+                            firstSeen: userData.firstSeen,
+                            messageCount: userData.messageCount || 0,
+                            lastSeen: new Date()
+                        } 
                     } 
-                }
-            },
-            { upsert: true }
-        );
-        this.userMappings.set(whatsappId, userData);
-        logger.debug(`✅ Saved user mapping: ${whatsappId} (${userData.name || userData.phone})`);
-    } catch (error) {
-        logger.error('❌ Failed to save user mapping:', error);
+                },
+                { upsert: true }
+            );
+            this.userMappings.set(whatsappId, userData);
+            logger.debug(`✅ Saved user mapping: ${whatsappId} (${userData.name || userData.phone})`);
+        } catch (error) {
+            logger.error('❌ Failed to save user mapping:', error);
+        }
     }
-}
-
-
 
     async saveContactMapping(phone, name) {
         try {
@@ -824,37 +820,35 @@ async saveUserMapping(whatsappId, userData) {
         }
     }
 
-async sendProfilePicture(topicId, jid, isUpdate = false, topicRecreated = false) {
-    try {
-        if (!config.get('telegram.features.profilePicSync')) return;
+    async createUserMapping(participant, whatsappMsg) {
+        if (this.userMappings.has(participant)) {
+            const userData = this.userMappings.get(participant);
+            userData.messageCount = (userData.messageCount || 0) + 1;
+            await this.saveUserMapping(participant, userData);
+            return;
+        }
 
-        const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-        if (!profilePicUrl) return;
+        let userName = null;
+        let userPhone = participant.split('@')[0];
+        
+        try {
+            if (this.contactMappings.has(userPhone)) {
+                userName = this.contactMappings.get(userPhone);
+            }
+        } catch (error) {
+            logger.debug('Could not fetch contact info:', error);
+        }
 
-        const dbUser = this.userMappings.get(jid) || {};
-        const dbUrl  = dbUser.lastProfilePicUrl;
-        const hasChanged = profilePicUrl !== dbUrl;
+        const userData = {
+            name: userName,
+            phone: userPhone,
+            firstSeen: new Date(),
+            messageCount: 1
+        };
 
-        // Only send if profile picture changed or topic was recreated
-        if (!hasChanged && !topicRecreated) return;
-
-        const caption = hasChanged ? '📸 Profile picture updated' : '📸 Profile Picture';
-        await this.telegramBot.sendPhoto(
-            config.get('telegram.chatId'),
-            profilePicUrl,
-            { message_thread_id: topicId, caption }
-        );
-
-        // Update cache + persist updated profile picture
-        this.profilePicCache.set(jid, profilePicUrl);
-        dbUser.lastProfilePicUrl = profilePicUrl;
-        await this.saveUserMapping(jid, dbUser);
-
-    } catch (err) {
-        logger.debug('Could not send profile picture:', err);
+        await this.saveUserMapping(participant, userData);
+        logger.debug(`👤 Created user mapping: ${userName || userPhone} (${userPhone})`);
     }
-}
-
 
     async getOrCreateTopic(chatJid, whatsappMsg) {
         // Check if we have a mapping
@@ -990,39 +984,26 @@ async sendProfilePicture(topicId, jid, isUpdate = false, topicRecreated = false)
     }
 
     // FIXED: Profile picture sync
-async sendProfilePicture(topicId, jid, isUpdate = false) {
-    try {
-        if (!config.get('telegram.features.profilePicSync')) return;
-
-        /* debounce identical WA events (ignore if called again < 2 s) */
-        if (Date.now() - (this._lastPicPush[jid] || 0) < 2000) return;
-        this._lastPicPush[jid] = Date.now();
-
-        const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-        if (!profilePicUrl) return;
-
-        /* skip if URL already seen (RAM cache **or** DB) */
-        const cachedUrl = this.profilePicCache.get(jid);
-        const dbUser    = this.userMappings.get(jid) || {};
-        const dbUrl     = dbUser.lastProfilePicUrl;
-        if (profilePicUrl === cachedUrl || profilePicUrl === dbUrl) return;
-
-        const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
-        await this.telegramBot.sendPhoto(
-            config.get('telegram.chatId'),
-            profilePicUrl,
-            { message_thread_id: topicId, caption }
-        );
-
-        /* update caches + DB */
-        this.profilePicCache.set(jid, profilePicUrl);
-        dbUser.lastProfilePicUrl = profilePicUrl;
-        await this.saveUserMapping(jid, dbUser);
-
-    } catch (err) {
-        logger.debug('Could not send profile picture:', err);
+    async sendProfilePicture(topicId, jid, isUpdate = false) {
+        try {
+            if (!config.get('telegram.features.profilePicSync')) return;
+            
+            const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+            
+            if (profilePicUrl) {
+                const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
+                
+                await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
+                    message_thread_id: topicId,
+                    caption: caption
+                });
+                
+                this.profilePicCache.set(jid, profilePicUrl);
+            }
+        } catch (error) {
+            logger.debug('Could not send profile picture:', error);
+        }
     }
-}
 
     // FIXED: Call notification handling
     async handleCallNotification(callEvent) {
