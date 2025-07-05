@@ -1572,104 +1572,86 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
         }
     }
 
-async handleTelegramSticker(msg) {
-    const topicId = msg.message_thread_id;
-    const whatsappJid = this.findWhatsAppJidByTopic(topicId);
-    const chatId = msg.chat.id;
+    async handleTelegramSticker(msg) {
+        const topicId = msg.message_thread_id;
+        const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        const chatId = msg.chat.id;
 
-    if (!whatsappJid) {
-        logger.warn('⚠️ Could not find WhatsApp chat for Telegram sticker');
-        return;
-    }
+        if (!whatsappJid) {
+            logger.warn('⚠️ Could not find WhatsApp chat for Telegram sticker');
+            return;
+        }
 
-    try {
-        await this.sendPresence(whatsappJid, 'composing');
+        try {
+            await this.sendPresence(whatsappJid, 'composing');
 
-        const fileId = msg.sticker.file_id;
-        const fileLink = await this.telegramBot.getFileLink(fileId);
-        const stickerBuffer = (await axios.get(fileLink, { responseType: 'arraybuffer' })).data;
-        const fileName = `sticker_${Date.now()}`;
-        const inputPath = path.join(this.tempDir, `${fileName}.webp`);
-        await fs.writeFile(inputPath, stickerBuffer);
+            const fileId = msg.sticker.file_id;
+            const fileLink = await this.telegramBot.getFileLink(fileId);
+            const stickerBuffer = (await axios.get(fileLink, { responseType: 'arraybuffer' })).data;
+            const fileName = `sticker_${Date.now()}`;
+            const inputPath = path.join(this.tempDir, `${fileName}.webp`);
+            await fs.writeFile(inputPath, stickerBuffer);
 
-        let outputBuffer;
+            let outputBuffer;
 
-        // Detect animated sticker type
-        const isAnimated = msg.sticker.is_animated || msg.sticker.is_video;
+            const isAnimated = msg.sticker.is_animated || msg.sticker.is_video;
 
-        if (isAnimated) {
-            const animatedPath = await this.convertAnimatedSticker(inputPath);
-            if (animatedPath) {
-                outputBuffer = await fs.readFile(animatedPath);
-                await fs.unlink(animatedPath).catch(() => {});
+            if (isAnimated) {
+                const animatedPath = await this.convertAnimatedSticker(inputPath);
+                if (animatedPath) {
+                    outputBuffer = await fs.readFile(animatedPath);
+                    await fs.unlink(animatedPath).catch(() => {});
+                } else {
+                    throw new Error('Animated sticker conversion failed');
+                }
             } else {
-                throw new Error('Animated sticker conversion failed');
+                const sticker = new Sticker(stickerBuffer, {
+                    type: StickerTypes.FULL,
+                    pack: 'Telegram Stickers',
+                    author: 'BridgeBot',
+                    quality: 100
+                });
+                outputBuffer = await sticker.toBuffer();
             }
-        } else {
-            const sticker = new Sticker(stickerBuffer, {
-                type: StickerTypes.FULL,
-                pack: 'Telegram Stickers',
-                author: 'BridgeBot',
-                quality: 100
+
+            const result = await this.whatsappBot.sendMessage(whatsappJid, {
+                sticker: outputBuffer
             });
-            outputBuffer = await sticker.toBuffer();
+
+            await fs.unlink(inputPath).catch(() => {});
+
+            if (result?.key?.id) {
+                logger.info('✅ Sticker sent to WhatsApp');
+                await this.setReaction(chatId, msg.message_id, '👍');
+            } else {
+                throw new Error('Sticker sent but no confirmation');
+            }
+        } catch (err) {
+            logger.error('❌ Failed to send sticker to WhatsApp:', err);
+            await this.setReaction(chatId, msg.message_id, '❌');
+
+            const fallbackPath = path.join(this.tempDir, `fallback_${Date.now()}.png`);
+            await sharp(stickerBuffer).resize(512, 512).png().toFile(fallbackPath);
+            await this.telegramBot.sendPhoto(chatId, fallbackPath, {
+                message_thread_id: topicId,
+                caption: 'Sticker (fallback)'
+            });
+            await fs.unlink(fallbackPath).catch(() => {});
         }
-
-        const result = await this.whatsappBot.sendMessage(whatsappJid, {
-            sticker: outputBuffer
-        });
-
-        await fs.unlink(inputPath).catch(() => {});
-
-        if (result?.key?.id) {
-            logger.info('✅ Sticker sent to WhatsApp');
-            await this.setReaction(chatId, msg.message_id, '👍');
-        } else {
-            throw new Error('Sticker sent but no confirmation');
-        }
-    } catch (err) {
-        logger.error('❌ Failed to send sticker to WhatsApp:', err);
-        await this.setReaction(chatId, msg.message_id, '❌');
-
-        // Fallback: send as photo
-        const fallbackPath = path.join(this.tempDir, `fallback_${Date.now()}.png`);
-        await sharp(stickerBuffer).resize(512, 512).png().toFile(fallbackPath);
-        await this.telegramBot.sendPhoto(chatId, fallbackPath, {
-            message_thread_id: topicId,
-            caption: 'Sticker (fallback)'
-        });
-        await fs.unlink(fallbackPath).catch(() => {});
     }
-} // ← This closing bracket was missing for handleTelegramSticker
 
-async convertAnimatedSticker(inputPath) {
-    const outputPath = inputPath.replace('.webp', '-converted.webp');
+    async convertAnimatedSticker(inputPath) {
+        const outputPath = inputPath.replace('.webp', '-converted.webp');
 
-    return new Promise((resolve, reject) => {
-        // Check if input is already a supported format
-        ffmpeg.ffprobe(inputPath, (err, metadata) => {
-            if (err) {
-                logger.debug('Could not probe input file:', err);
-                resolve(null);
-                return;
-            }
-
-            const hasVideo = metadata.streams.some(stream => stream.codec_type === 'video');
-            
-            if (!hasVideo) {
-                // Not an animated file, return null for fallback
-                resolve(null);
-                return;
-            }
-
+        return new Promise((resolve, reject) => {
             ffmpeg(inputPath)
                 .outputOptions([
                     '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
                     '-loop', '0',
                     '-an',
-                    '-vsync', '0',
-                    '-f', 'webp'
+                    '-vsync', '0'
                 ])
+                .outputFormat('webp')
                 .on('end', () => resolve(outputPath))
                 .on('error', (err) => {
                     logger.debug('Animated sticker conversion failed:', err.message);
@@ -1677,8 +1659,7 @@ async convertAnimatedSticker(inputPath) {
                 })
                 .save(outputPath);
         });
-    });
-}
+    }
 
     async handleTelegramLocation(msg) {
         try {
