@@ -157,16 +157,8 @@ class TelegramBridge {
         }
     }
 
-async saveUserMapping(whatsappId, userData = {}) {
+async saveUserMapping(whatsappId, userData) {
     try {
-        const {
-            name = null,
-            phone = null,
-            firstSeen = new Date(),
-            messageCount = 0,
-            lastProfilePicUrl = null
-        } = userData;
-
         await this.collection.updateOne(
             { type: 'user', 'data.whatsappId': whatsappId },
             {
@@ -174,27 +166,19 @@ async saveUserMapping(whatsappId, userData = {}) {
                     type: 'user',
                     data: {
                         whatsappId,
-                        name,
-                        phone,
-                        firstSeen,
-                        messageCount,
-                        lastProfilePicUrl,
+                        name:  userData.name,
+                        phone: userData.phone,
+                        firstSeen: usersData.firstSeen,
+                        messageCount: userData.messageCount || 0,
+                        lastProfilePicUrl: userData.lastProfilePicUrl || null,
                         lastSeen: new Date()
                     }
                 }
             },
             { upsert: true }
         );
-
-        this.userMappings.set(whatsappId, {
-            name,
-            phone,
-            firstSeen,
-            messageCount,
-            lastProfilePicUrl
-        });
-
-        logger.debug(`✅ Saved user mapping: ${whatsappId} (${name || phone})`);
+        this.userMappings.set(whatsappId, userData);
+        logger.debug(`✅ Saved user mapping: ${whatsappId} (${userData.name || userData.phone})`);
     } catch (err) {
         logger.error('❌ Failed to save user mapping:', err);
     }
