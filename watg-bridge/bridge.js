@@ -1536,11 +1536,10 @@ class TelegramBridge {
                     break;
 
                 case 'video_note':
-                    // FIXED: Proper video note sending to WhatsApp
                     messageOptions = {
                         video: fs.readFileSync(filePath),
                         caption: caption,
-                        ptv: true, // This is the key for video notes
+                        ptv: true,
                         viewOnce: hasMediaSpoiler
                     };
                     break;
@@ -1582,7 +1581,7 @@ class TelegramBridge {
                     
                 case 'sticker':
                     await this.handleTelegramSticker(msg);
-                    return; // stop further handling, it's done inside handleTelegramSticker()
+                    return;
             }
 
             sendResult = await this.whatsappBot.sendMessage(whatsappJid, messageOptions);
@@ -1629,7 +1628,6 @@ class TelegramBridge {
 
             let outputBuffer;
 
-            // Detect animated sticker type
             const isAnimated = msg.sticker.is_animated || msg.sticker.is_video;
 
             if (isAnimated) {
@@ -1666,7 +1664,6 @@ class TelegramBridge {
             logger.error('❌ Failed to send sticker to WhatsApp:', err);
             await this.setReaction(chatId, msg.message_id, '❌');
 
-            // Fallback: send as photo
             const fallbackPath = path.join(this.tempDir, `fallback_${Date.now()}.png`);
             await sharp(stickerBuffer).resize(512, 512).png().toFile(fallbackPath);
             await this.telegramBot.sendPhoto(chatId, fallbackPath, {
@@ -1692,11 +1689,13 @@ class TelegramBridge {
                 .on('end', () => resolve(outputPath))
                 .on('error', (err) => {
                     logger.debug('Animated sticker conversion failed:', err.message);
-                    resolve(null); // fallback
+                    resolve(null);
                 })
                 .save(outputPath);
         });
     }
+
+
 
     async handleTelegramLocation(msg) {
         try {
