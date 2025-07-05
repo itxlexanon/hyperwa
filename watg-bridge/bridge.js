@@ -995,30 +995,29 @@ async sendProfilePicture(topicId, jid, isUpdate = false) {
     try {
         if (!config.get('telegram.features.profilePicSync')) return;
 
-        /* debounce identical WA events (ignore if called again < 2 s) */
+        /* debounce WhatsApp duplicate events */
         if (Date.now() - (this._lastPicPush[jid] || 0) < 2000) return;
         this._lastPicPush[jid] = Date.now();
 
         const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
         if (!profilePicUrl) return;
 
-        /* skip if URL already seen (RAM cache **or** DB) */
+        /* skip if URL already seen (RAM cache OR DB) */
         const cachedUrl = this.profilePicCache.get(jid);
-        const dbUser    = this.userMappings.get(jid) || {};
-        const dbUrl     = dbUser.lastProfilePicUrl;
+        const dbUrl     = (this.userMappings.get(jid) || {}).lastProfilePicUrl;
         if (profilePicUrl === cachedUrl || profilePicUrl === dbUrl) return;
 
         const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
-        await this.telegramBot.sendPhoto(
-            config.get('telegram.chatId'),
-            profilePicUrl,
-            { message_thread_id: topicId, caption }
-        );
+        await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
+            message_thread_id: topicId,
+            caption
+        });
 
         /* update caches + DB */
         this.profilePicCache.set(jid, profilePicUrl);
-        dbUser.lastProfilePicUrl = profilePicUrl;
-        await this.saveUserMapping(jid, dbUser);
+        const userData = this.userMappings.get(jid) || {};
+        userData.lastProfilePicUrl = profilePicUrl;
+        await this.saveUserMapping(jid, userData);
 
     } catch (err) {
         logger.debug('Could not send profile picture:', err);
@@ -1316,14 +1315,10 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
         }
     }
 
-// ───────────────────────────────────────────────────────────
-// TELEGRAM → WHATSAPP  (with quotes)
-// ───────────────────────────────────────────────────────────
 async handleTelegramMessage(msg) {
     try {
         const topicId     = msg.message_thread_id;
         const whatsappJid = this.findWhatsAppJidByTopic(topicId);
-
         if (!whatsappJid) {
             logger.warn('⚠️ Could not find WhatsApp chat for Telegram message');
             return;
@@ -1331,59 +1326,57 @@ async handleTelegramMessage(msg) {
 
         await this.sendTypingPresence(whatsappJid);
 
-        /* status replies are handled elsewhere */
+        /* status replies */
         if (whatsappJid === 'status@broadcast' && msg.reply_to_message) {
             await this.handleStatusReply(msg);
             return;
         }
 
-        /* look‑up WA key we should quote (if TG user replied to something) */
+        /* WA key to quote (if TG user replied) */
         const quoted = msg.reply_to_message
             ? this.tgToWa.get(msg.reply_to_message.message_id)
             : null;
 
-        /* TEXT —–––––––––––––––– */
+        /* TEXT */
         if (msg.text) {
-            const opts = { text: msg.text };
+            const content = { text: msg.text };
             if (msg.entities?.some(e => e.type === 'spoiler')) {
-                opts.text = `🫥 ${msg.text}`;
+                content.text = `🫥 ${msg.text}`;
             }
 
-            const sendResult = await this.whatsappBot.sendMessage(
+            const res = await this.whatsappBot.sendMessage(
                 whatsappJid,
-                opts,
+                content,
                 quoted ? { quoted } : {}
             );
 
-            if (sendResult?.key?.id) {
-                this.tgToWa.set(msg.message_id, sendResult.key);
-                this.waToTg.set(sendResult.key.id, msg.message_id);
+            if (res?.key?.id) {
+                this.tgToWa.set(msg.message_id, res.key);
+                this.waToTg.set(res.key.id, msg.message_id);
                 await this.setReaction(msg.chat.id, msg.message_id, '👍');
-                setTimeout(() => this.markAsRead(whatsappJid, [sendResult.key]), 1_000);
+                setTimeout(() => this.markAsRead(whatsappJid, [res.key]), 1000);
             }
-            return;   // nothing else to do for plain text
+            return;
         }
 
-        /* MEDIA / OTHER —–––––––– */
-        // hand over to specialised helpers but tell them what to quote
-        msg.__waQuoted = quoted;                     // 👈 pass hint via temp prop
-        if (msg.photo)        return this.handleTelegramMedia(msg,'photo');
-        if (msg.video)        return this.handleTelegramMedia(msg,'video');
-        if (msg.animation)    return this.handleTelegramMedia(msg,'animation');
-        if (msg.video_note)   return this.handleTelegramMedia(msg,'video_note');
-        if (msg.voice)        return this.handleTelegramMedia(msg,'voice');
-        if (msg.audio)        return this.handleTelegramMedia(msg,'audio');
-        if (msg.document)     return this.handleTelegramMedia(msg,'document');
-        if (msg.sticker)      return this.handleTelegramMedia(msg,'sticker');
-        if (msg.location)     return this.handleTelegramLocation(msg);
-        if (msg.contact)      return this.handleTelegramContact(msg);
+        /* MEDIA / OTHER */
+        msg.__waQuoted = quoted;               // pass hint to media handler
+        if (msg.photo)      return this.handleTelegramMedia(msg,'photo');
+        if (msg.video)      return this.handleTelegramMedia(msg,'video');
+        if (msg.animation)  return this.handleTelegramMedia(msg,'animation');
+        if (msg.video_note) return this.handleTelegramMedia(msg,'video_note');
+        if (msg.voice)      return this.handleTelegramMedia(msg,'voice');
+        if (msg.audio)      return this.handleTelegramMedia(msg,'audio');
+        if (msg.document)   return this.handleTelegramMedia(msg,'document');
+        if (msg.sticker)    return this.handleTelegramMedia(msg,'sticker');
+        if (msg.location)   return this.handleTelegramLocation(msg);
+        if (msg.contact)    return this.handleTelegramContact(msg);
 
     } catch (err) {
         logger.error('❌ Failed to handle Telegram message:', err);
         await this.setReaction(msg.chat.id, msg.message_id, '❌');
     } finally {
-        /* reset typing */
-        if (whatsappJid) setTimeout(() => this.sendPresence(whatsappJid,'available'), 2_000);
+        if (whatsappJid) setTimeout(() => this.sendPresence(whatsappJid,'available'), 2000);
     }
 }
 
@@ -1398,12 +1391,12 @@ async handleStatusReply(msg) {
             return;
         }
 
-        const statusJid = originalStatusKey.participant;
-        await this.whatsappBot.sendMessage(
-            'status@broadcast',
-            { text: msg.text },
-            { statusJidList: [statusJid], quoted: originalStatusKey }   // <-- new quoted
-        );
+   const statusJid = originalStatusKey.participant;
+await this.whatsappBot.sendMessage(
+    'status@broadcast',
+    { text: msg.text },
+    { statusJidList: [statusJid], quoted: originalStatusKey } // 👈
+);
 
         await this.setReaction(msg.chat.id, msg.message_id, '✅');
     } catch (err) {
@@ -1739,10 +1732,9 @@ async handleTelegramMedia(msg, mediaType) {
 // ───────────────────────────────────────────────────────────
 async sendSimpleMessage(topicId, text, whatsappMsg) {
     if (!topicId) return null;
-
     const chatId = config.get('telegram.chatId');
 
-    /* reply‑to mapping */
+    /* reply‑to if WA was itself a reply */
     const ctx   = whatsappMsg?.message?.extendedTextMessage?.contextInfo;
     const tgOpt = { message_thread_id: topicId };
     if (ctx?.stanzaId && this.waToTg.has(ctx.stanzaId)) {
