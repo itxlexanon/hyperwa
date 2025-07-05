@@ -1372,36 +1372,60 @@ class TelegramBridge {
     }
 
     // FIXED: Status reply handling
-// FIXED: Status reply handling
-async handleStatusReply(msg) {
-    try {
-        const originalStatusKey = this.statusMessageMapping.get(msg.reply_to_message.message_id);
-        if (!originalStatusKey) {
-            await this.telegramBot.sendMessage(msg.chat.id, '❌ Cannot find original status to reply to', {
-                message_thread_id: msg.message_thread_id
+    async handleStatusReply(msg) {
+        try {
+            // Check if the replied message is one of the status messages we forwarded
+            const originalStatusKey = this.statusMessageMapping.get(msg.reply_to_message.message_id);
+            if (!originalStatusKey) {
+                await this.telegramBot.sendMessage(msg.chat.id, '❌ Cannot find original status to reply to', {
+                    message_thread_id: msg.message_thread_id
+                });
+                return;
+            }
+
+            const statusJid = originalStatusKey.participant;
+            const textReply = msg.text || msg.caption;
+
+            if (!textReply) {
+                await this.telegramBot.sendMessage(msg.chat.id, '❌ Reply to status must contain text', {
+                    message_thread_id: msg.message_thread_id
+                });
+                return;
+            }
+
+            // The 'sendMessage' for status replies needs to specify the original status message key
+            // to correctly appear as a reply on WhatsApp.
+            // WhatsApp's status replies are a bit unique. We send a message to 'status@broadcast'
+            // with a specific `quoted` message key pointing to the status being replied to.
+            const sendResult = await this.whatsappBot.sendMessage('status@broadcast', { text: textReply }, {
+                quoted: originalStatusKey,
+                participantUpdate: [
+                    {
+                        id: originalStatusKey.participant, // The JID of the user whose status is being replied to
+                        action: 'add'
+                    }
+                ]
             });
-            return;
+
+            if (sendResult) {
+                const phone = statusJid.split('@')[0];
+                const contactName = this.contactMappings.get(phone) || `+${phone}`;
+                
+                await this.telegramBot.sendMessage(msg.chat.id, `✅ Status reply sent to ${contactName}`, {
+                    message_thread_id: msg.message_thread_id
+                });
+                
+                await this.setReaction(msg.chat.id, msg.message_id, '✅');
+            } else {
+                throw new Error('Failed to send status reply to WhatsApp.');
+            }
+            
+        } catch (error) {
+            logger.error('❌ Failed to handle status reply:', error);
+            await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
-
-        const statusJid = originalStatusKey.participant;
-        
-        // FIXED: Send regular message to the user, not to status broadcast
-        await this.whatsappBot.sendMessage(statusJid, { text: msg.text });
-
-        const phone = statusJid.split('@')[0];
-        const contactName = this.contactMappings.get(phone) || `+${phone}`;
-        
-        await this.telegramBot.sendMessage(msg.chat.id, `✅ Status reply sent to ${contactName}`, {
-            message_thread_id: msg.message_thread_id
-        });
-        
-        await this.setReaction(msg.chat.id, msg.message_id, '✅');
-        
-    } catch (error) {
-        logger.error('❌ Failed to handle status reply:', error);
-        await this.setReaction(msg.chat.id, msg.message_id, '❌');
     }
-}
+
 
 
     async handleTelegramMedia(msg, mediaType) {
