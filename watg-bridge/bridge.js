@@ -36,6 +36,7 @@ class TelegramBridge {
         this.topicVerificationCache = new Map();
         this.pollingRetries = 0;
         this.maxPollingRetries = 5;
+        this.profilePicUpdateCooldown = new Map();
     }
 
     async initialize() {
@@ -96,6 +97,7 @@ class TelegramBridge {
             await this.collection.createIndex({ type: 1, 'data.whatsappJid': 1 }, { unique: true, partialFilterExpression: { type: 'chat' } });
             await this.collection.createIndex({ type: 1, 'data.whatsappId': 1 }, { unique: true, partialFilterExpression: { type: 'user' } });
             await this.collection.createIndex({ type: 1, 'data.phone': 1 }, { unique: true, partialFilterExpression: { type: 'contact' } });
+            await this.collection.createIndex({ type: 1, 'data.jid': 1 }, { unique: true, partialFilterExpression: { type: 'profile_pic' } });
             logger.info('📊 Database initialized for Telegram bridge (single collection: bridge)');
         } catch (error) {
             logger.error('❌ Failed to initialize database:', error);
@@ -122,10 +124,13 @@ class TelegramBridge {
                     case 'contact':
                         this.contactMappings.set(mapping.data.phone, mapping.data.name);
                         break;
+                    case 'profile_pic':
+                        this.profilePicCache.set(mapping.data.jid, mapping.data.url);
+                        break;
                 }
             }
             
-            logger.info(`📊 Loaded mappings: ${this.chatMappings.size} chats, ${this.userMappings.size} users, ${this.contactMappings.size} contacts`);
+            logger.info(`📊 Loaded mappings: ${this.chatMappings.size} chats, ${this.userMappings.size} users, ${this.contactMappings.size} contacts, ${this.profilePicCache.size} profile pics`);
         } catch (error) {
             logger.error('❌ Failed to load mappings:', error);
         }
@@ -202,6 +207,42 @@ class TelegramBridge {
             logger.debug(`✅ Saved contact mapping: ${phone} -> ${name}`);
         } catch (error) {
             logger.error('❌ Failed to save contact mapping:', error);
+        }
+    }
+
+    async saveProfilePicUrl(jid, url) {
+        try {
+            await this.collection.updateOne(
+                { type: 'profile_pic', 'data.jid': jid },
+                { 
+                    $set: { 
+                        type: 'profile_pic',
+                        data: { 
+                            jid, 
+                            url, 
+                            updatedAt: new Date() 
+                        } 
+                    } 
+                },
+                { upsert: true }
+            );
+            this.profilePicCache.set(jid, url);
+            logger.debug(`✅ Saved profile pic URL: ${jid} -> ${url}`);
+        } catch (error) {
+            logger.error('❌ Failed to save profile pic URL:', error);
+        }
+    }
+
+    async getProfilePicUrl(jid) {
+        try {
+            const result = await this.collection.findOne({ 
+                type: 'profile_pic', 
+                'data.jid': jid 
+            });
+            return result?.data?.url || null;
+        } catch (error) {
+            logger.error('❌ Failed to get profile pic URL:', error);
+            return null;
         }
     }
 
@@ -983,7 +1024,7 @@ class TelegramBridge {
         }
     }
 
-    // FIXED: Profile picture sync
+    // FIXED: Profile picture sync with database storage
     async sendProfilePicture(topicId, jid, isUpdate = false) {
         try {
             if (!config.get('telegram.features.profilePicSync')) return;
@@ -991,6 +1032,13 @@ class TelegramBridge {
             const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
             
             if (profilePicUrl) {
+                // Check if we already have this URL in database
+                const cachedUrl = await this.getProfilePicUrl(jid);
+                if (cachedUrl === profilePicUrl && isUpdate) {
+                    logger.debug(`Profile picture URL unchanged for ${jid}, skipping`);
+                    return;
+                }
+                
                 const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
                 
                 await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
@@ -998,7 +1046,9 @@ class TelegramBridge {
                     caption: caption
                 });
                 
-                this.profilePicCache.set(jid, profilePicUrl);
+                // Save URL to database
+                await this.saveProfilePicUrl(jid, profilePicUrl);
+                logger.info(`📸 Sent profile picture for ${jid} (${isUpdate ? 'update' : 'initial'})`);
             }
         } catch (error) {
             logger.debug('Could not send profile picture:', error);
@@ -1049,186 +1099,171 @@ class TelegramBridge {
         }
     }
 
+    async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
+        try {
+            logger.info(`📥 Processing ${mediaType} from WhatsApp`);
+            
+            let mediaMessage;
+            let fileName = `media_${Date.now()}`;
+            let caption = this.extractText(whatsappMsg);
+            
+            switch (mediaType) {
+                case 'image':
+                    mediaMessage = whatsappMsg.message.imageMessage;
+                    fileName += '.jpg';
+                    break;
+                case 'video':
+                    mediaMessage = whatsappMsg.message.videoMessage;
+                    fileName += '.mp4';
+                    break;
+                case 'video_note':
+                    mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage;
+                    fileName += '.mp4';
+                    break;
+                case 'audio':
+                    mediaMessage = whatsappMsg.message.audioMessage;
+                    fileName += '.ogg';
+                    break;
+                case 'document':
+                    mediaMessage = whatsappMsg.message.documentMessage;
+                    fileName = mediaMessage.fileName || `document_${Date.now()}`;
+                    break;
+                case 'sticker':
+                    mediaMessage = whatsappMsg.message.stickerMessage;
+                    fileName += '.webp';
+                    break;
+            }
 
-async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
-    try {
-        logger.info(`📥 Processing ${mediaType} from WhatsApp`);
+            if (!mediaMessage) {
+                logger.error(`❌ No media message found for ${mediaType}`);
+                return;
+            }
 
-        let mediaMessage;
-        let fileName = `media_${Date.now()}`;
-        let caption = this.extractText(whatsappMsg);
+            logger.info(`📥 Downloading ${mediaType} from WhatsApp: ${fileName}`);
 
-        switch (mediaType) {
-            case 'image':
-                mediaMessage = whatsappMsg.message.imageMessage;
-                fileName += '.jpg';
-                break;
-            case 'video':
-                mediaMessage = whatsappMsg.message.videoMessage;
-                fileName += '.mp4';
-                break;
-            case 'video_note':
-                mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage;
-                fileName += '.mp4';
-                break;
-            case 'audio':
-                mediaMessage = whatsappMsg.message.audioMessage;
-                fileName += '.ogg';
-                break;
-            case 'document':
-                mediaMessage = whatsappMsg.message.documentMessage;
-                fileName = mediaMessage.fileName || `document_${Date.now()}`;
-                break;
-            case 'sticker':
-                mediaMessage = whatsappMsg.message.stickerMessage;
-                fileName += '.webp';
-                break;
-        }
+            const downloadType = mediaType === 'sticker' ? 'sticker' : 
+                                mediaType === 'video_note' ? 'video' : 
+                                mediaType;
+            
+            const stream = await downloadContentFromMessage(mediaMessage, downloadType);
+            
+            if (!stream) {
+                logger.error(`❌ Failed to get stream for ${mediaType}`);
+                return;
+            }
+            
+            const buffer = await this.streamToBuffer(stream);
+            
+            if (!buffer || buffer.length === 0) {
+                logger.error(`❌ Empty buffer for ${mediaType}`);
+                return;
+            }
+            
+            const filePath = path.join(this.tempDir, fileName);
+            await fs.writeFile(filePath, buffer);
 
-        if (!mediaMessage) {
-            logger.error(`❌ No media message found for ${mediaType}`);
-            return;
-        }
+            logger.info(`💾 Saved ${mediaType} to: ${filePath} (${buffer.length} bytes)`);
 
-        const downloadType = mediaType === 'sticker' ? 'sticker'
-                          : mediaType === 'video_note' ? 'video'
-                          : mediaType;
+            const sender = whatsappMsg.key.remoteJid;
+            const participant = whatsappMsg.key.participant || sender;
+            
+            if (isOutgoing) {
+                caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
+            } else if (sender.endsWith('@g.us') && participant !== sender) {
+                const senderPhone = participant.split('@')[0];
+                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
+                caption = `👤 ${senderName}:\n${caption || ''}`;
+            }
 
-        const stream = await downloadContentFromMessage(mediaMessage, downloadType);
-        if (!stream) {
-            logger.error(`❌ Failed to get stream for ${mediaType}`);
-            return;
-        }
-
-        const buffer = await this.streamToBuffer(stream);
-        if (!buffer || buffer.length === 0) {
-            logger.error(`❌ Empty buffer for ${mediaType}`);
-            return;
-        }
-
-        const filePath = path.join(this.tempDir, fileName);
-        await fs.writeFile(filePath, buffer);
-        logger.info(`💾 Saved ${mediaType} to: ${filePath} (${buffer.length} bytes)`);
-
-        const sender = whatsappMsg.key.remoteJid;
-        const participant = whatsappMsg.key.participant || sender;
-
-        if (isOutgoing) {
-            caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
-        } else if (sender.endsWith('@g.us') && participant !== sender) {
-            const senderPhone = participant.split('@')[0];
-            const senderName = this.contactMappings.get(senderPhone) || senderPhone;
-            caption = `👤 ${senderName}:\n${caption || ''}`;
-        }
-
-        const chatId = config.get('telegram.chatId');
-
-        switch (mediaType) {
-            case 'image':
-                await this.telegramBot.sendPhoto(chatId, filePath, {
-                    message_thread_id: topicId,
-                    caption: caption
-                });
-                break;
-
-            case 'video':
-                if (mediaMessage.gifPlayback) {
-                    await this.telegramBot.sendAnimation(chatId, filePath, {
+            const chatId = config.get('telegram.chatId');
+            
+            switch (mediaType) {
+                case 'image':
+                    await this.telegramBot.sendPhoto(chatId, filePath, {
                         message_thread_id: topicId,
                         caption: caption
                     });
-                } else {
-                    await this.telegramBot.sendVideo(chatId, filePath, {
-                        message_thread_id: topicId,
-                        caption: caption
-                    });
-                }
-                break;
+                    break;
+                    
+                case 'video':
+                    if (mediaMessage.gifPlayback) {
+                        await this.telegramBot.sendAnimation(chatId, filePath, {
+                            message_thread_id: topicId,
+                            caption: caption
+                        });
+                    } else {
+                        await this.telegramBot.sendVideo(chatId, filePath, {
+                            message_thread_id: topicId,
+                            caption: caption
+                        });
+                    }
+                    break;
 
-            case 'video_note':
-                const videoNotePath = await this.convertToVideoNote(filePath);
-                await this.telegramBot.sendVideoNote(chatId, videoNotePath, {
-                    message_thread_id: topicId
-                });
-                if (caption) {
-                    await this.telegramBot.sendMessage(chatId, caption, {
+                case 'video_note':
+                    // Convert to circular video note format for Telegram
+                    const videoNotePath = await this.convertToVideoNote(filePath);
+                    await this.telegramBot.sendVideoNote(chatId, videoNotePath, {
                         message_thread_id: topicId
                     });
-                }
-                if (videoNotePath !== filePath) {
-                    await fs.unlink(videoNotePath).catch(() => {});
-                }
-                break;
-
-            case 'audio':
-                if (mediaMessage.ptt) {
-                    await this.telegramBot.sendVoice(chatId, filePath, {
-                        message_thread_id: topicId,
-                        caption: caption
-                    });
-                } else {
-                    await this.telegramBot.sendAudio(chatId, filePath, {
-                        message_thread_id: topicId,
-                        caption: caption,
-                        title: mediaMessage.title || 'Audio'
-                    });
-                }
-                break;
-
-            case 'document':
-                await this.telegramBot.sendDocument(chatId, filePath, {
-                    message_thread_id: topicId,
-                    caption: caption
-                });
-                break;
-
-            case 'sticker':
-                const isAnimated = mediaMessage.isAnimated ||
-                    (mediaMessage.mimetype && mediaMessage.mimetype.includes('animated')) ||
-                    (mediaMessage.url && mediaMessage.url.includes('animated'));
-
-                if (isAnimated) {
-                    try {
-                        const mp4Path = filePath.replace('.webp', '.mp4');
-                        await convertWebpToMp4(filePath, mp4Path);
-
-                        await this.telegramBot.sendAnimation(chatId, mp4Path, {
-                            message_thread_id: topicId,
-                            caption: caption || 'Animated Sticker'
-                        });
-
-                        await fs.unlink(mp4Path).catch(() => {});
-                    } catch (error) {
-                        logger.debug('Failed to send animated sticker, fallback:', error);
-                        await this.telegramBot.sendSticker(chatId, filePath, {
+                    if (caption) {
+                        await this.telegramBot.sendMessage(chatId, caption, {
                             message_thread_id: topicId
                         });
                     }
-                } else {
+                    // Clean up converted file
+                    if (videoNotePath !== filePath) {
+                        await fs.unlink(videoNotePath).catch(() => {});
+                    }
+                    break;
+                    
+                case 'audio':
+                    if (mediaMessage.ptt) {
+                        await this.telegramBot.sendVoice(chatId, filePath, {
+                            message_thread_id: topicId,
+                            caption: caption
+                        });
+                    } else {
+                        await this.telegramBot.sendAudio(chatId, filePath, {
+                            message_thread_id: topicId,
+                            caption: caption,
+                            title: mediaMessage.title || 'Audio'
+                        });
+                    }
+                    break;
+                    
+                case 'document':
+                    await this.telegramBot.sendDocument(chatId, filePath, {
+                        message_thread_id: topicId,
+                        caption: caption
+                    });
+                    break;
+                    
+                case 'sticker':
                     try {
                         await this.telegramBot.sendSticker(chatId, filePath, {
                             message_thread_id: topicId
                         });
-                    } catch (error) {
-                        logger.debug('Static sticker failed, converting to PNG:', error);
+                    } catch (stickerError) {
+                        logger.debug('Failed to send as sticker, converting to PNG:', stickerError);
                         const pngPath = filePath.replace('.webp', '.png');
                         await sharp(filePath).png().toFile(pngPath);
+                        
                         await this.telegramBot.sendPhoto(chatId, pngPath, {
                             message_thread_id: topicId,
                             caption: caption || 'Sticker'
                         });
                         await fs.unlink(pngPath).catch(() => {});
                     }
-                }
-                break;
-        }
+                    break;
+            }
 
-        logger.info(`✅ Successfully sent ${mediaType} to Telegram`);
-        await fs.unlink(filePath).catch(() => {});
-    } catch (error) {
-        logger.error(`❌ Failed to handle WhatsApp ${mediaType}:`, error);
+            logger.info(`✅ Successfully sent ${mediaType} to Telegram`);
+            await fs.unlink(filePath).catch(() => {});
+            
+        } catch (error) {
+            logger.error(`❌ Failed to handle WhatsApp ${mediaType}:`, error);
+        }
     }
-}
 
     async convertToVideoNote(inputPath) {
         return new Promise((resolve, reject) => {
@@ -1594,6 +1629,7 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
 
             let outputBuffer;
 
+            // Detect animated sticker type
             const isAnimated = msg.sticker.is_animated || msg.sticker.is_video;
 
             if (isAnimated) {
@@ -1630,6 +1666,7 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
             logger.error('❌ Failed to send sticker to WhatsApp:', err);
             await this.setReaction(chatId, msg.message_id, '❌');
 
+            // Fallback: send as photo
             const fallbackPath = path.join(this.tempDir, `fallback_${Date.now()}.png`);
             await sharp(stickerBuffer).resize(512, 512).png().toFile(fallbackPath);
             await this.telegramBot.sendPhoto(chatId, fallbackPath, {
@@ -1655,7 +1692,7 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
                 .on('end', () => resolve(outputPath))
                 .on('error', (err) => {
                     logger.debug('Animated sticker conversion failed:', err.message);
-                    resolve(null);
+                    resolve(null); // fallback
                 })
                 .save(outputPath);
         });
@@ -1797,7 +1834,7 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
             return;
         }
 
-        // FIXED: Enhanced contact sync handlers
+        // FIXED: Combined contact update handler with rate limiting
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             try {
                 let updatedCount = 0;
@@ -1830,7 +1867,34 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
                             }
                         }
                     }
+
+                    // Profile picture update logic with rate limiting
+                    if (contact.id && this.chatMappings.has(contact.id)) {
+                        const now = Date.now();
+                        const lastUpdate = this.profilePicUpdateCooldown.get(contact.id) || 0;
+                        
+                        // Only check profile picture if it's been more than 5 minutes since last check
+                        if (now - lastUpdate > 5 * 60 * 1000) {
+                            this.profilePicUpdateCooldown.set(contact.id, now);
+                            
+                            const topicId = this.chatMappings.get(contact.id);
+                            
+                            try {
+                                const newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(contact.id, 'image');
+                                const oldProfilePicUrl = await this.getProfilePicUrl(contact.id);
+                                
+                                // Only send if URL actually changed
+                                if (newProfilePicUrl && newProfilePicUrl !== oldProfilePicUrl) {
+                                    await this.sendProfilePicture(topicId, contact.id, true);
+                                    logger.info(`📸 Profile picture updated for ${contact.id}`);
+                                }
+                            } catch (error) {
+                                logger.debug(`Could not check profile picture for ${contact.id}:`, error);
+                            }
+                        }
+                    }
                 }
+                
                 if (updatedCount > 0) {
                     logger.info(`✅ Processed ${updatedCount} contact updates`);
                 }
@@ -1861,27 +1925,6 @@ async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
                 }
             } catch (error) {
                 logger.error('❌ Failed to process new contacts:', error);
-            }
-        });
-
-        // FIXED: Profile picture update handler
-        this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
-            for (const contact of contacts) {
-                if (contact.id && this.chatMappings.has(contact.id)) {
-                    const topicId = this.chatMappings.get(contact.id);
-                    
-                    try {
-                        const newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(contact.id, 'image');
-                        const oldProfilePicUrl = this.profilePicCache.get(contact.id);
-                        
-                        if (newProfilePicUrl && newProfilePicUrl !== oldProfilePicUrl) {
-                            await this.sendProfilePicture(topicId, contact.id, true);
-                            logger.info(`📸 Profile picture updated for ${contact.id}`);
-                        }
-                    } catch (error) {
-                        logger.debug(`Could not check profile picture for ${contact.id}:`, error);
-                    }
-                }
             }
         });
 
