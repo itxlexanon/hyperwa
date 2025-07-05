@@ -160,13 +160,14 @@ class TelegramCommands {
             await this.bridge.telegramBot.sendMessage(chatId, '🔄 Updating topic names...', { parse_mode: 'Markdown' });
             
             const startTime = Date.now();
-            await this.bridge.updateTopicNames();
+            const result = await this.bridge.updateTopicNames();
             const endTime = Date.now();
             const duration = ((endTime - startTime) / 1000).toFixed(2);
             
             await this.bridge.telegramBot.sendMessage(chatId, 
-                `✅ Topic names updated successfully!\n\n` +
-                `📊 Updated ${this.bridge.chatMappings.size} topics\n` +
+                `✅ Topic update complete!\n\n` +
+                `📊 Updated: ${result.updated} topics\n` +
+                `❌ Failed/Removed: ${result.failed} topics\n` +
                 `⏱️ Completed in ${duration} seconds`, 
                 { 
                     parse_mode: 'Markdown',
