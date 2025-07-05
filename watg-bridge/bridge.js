@@ -23,6 +23,7 @@ class TelegramBridge {
         this.userMappings = new Map();
         this.contactMappings = new Map();
         this.profilePicCache = new Map();
+        this._lastPicPush    = Object.create(null); // jid ➜ ts
         this.tempDir = path.join(__dirname, '../temp');
         this.isProcessing = false;
         this.activeCallNotifications = new Map();
@@ -156,31 +157,49 @@ class TelegramBridge {
         }
     }
 
-    async saveUserMapping(whatsappId, userData) {
-        try {
-            await this.collection.updateOne(
-                { type: 'user', 'data.whatsappId': whatsappId },
-                { 
-                    $set: { 
-                        type: 'user',
-                        data: { 
-                            whatsappId,
-                            name: userData.name,
-                            phone: userData.phone,
-                            firstSeen: userData.firstSeen,
-                            messageCount: userData.messageCount || 0,
-                            lastSeen: new Date()
-                        } 
-                    } 
-                },
-                { upsert: true }
-            );
-            this.userMappings.set(whatsappId, userData);
-            logger.debug(`✅ Saved user mapping: ${whatsappId} (${userData.name || userData.phone})`);
-        } catch (error) {
-            logger.error('❌ Failed to save user mapping:', error);
-        }
+async saveUserMapping(whatsappId, userData = {}) {
+    try {
+        const {
+            name = null,
+            phone = null,
+            firstSeen = new Date(),
+            messageCount = 0,
+            lastProfilePicUrl = null
+        } = userData;
+
+        await this.collection.updateOne(
+            { type: 'user', 'data.whatsappId': whatsappId },
+            {
+                $set: {
+                    type: 'user',
+                    data: {
+                        whatsappId,
+                        name,
+                        phone,
+                        firstSeen,
+                        messageCount,
+                        lastProfilePicUrl,
+                        lastSeen: new Date()
+                    }
+                }
+            },
+            { upsert: true }
+        );
+
+        this.userMappings.set(whatsappId, {
+            name,
+            phone,
+            firstSeen,
+            messageCount,
+            lastProfilePicUrl
+        });
+
+        logger.debug(`✅ Saved user mapping: ${whatsappId} (${name || phone})`);
+    } catch (err) {
+        logger.error('❌ Failed to save user mapping:', err);
     }
+}
+
 
     async saveContactMapping(phone, name) {
         try {
@@ -984,26 +1003,39 @@ class TelegramBridge {
     }
 
     // FIXED: Profile picture sync
-    async sendProfilePicture(topicId, jid, isUpdate = false) {
-        try {
-            if (!config.get('telegram.features.profilePicSync')) return;
-            
-            const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-            
-            if (profilePicUrl) {
-                const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
-                
-                await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
-                    message_thread_id: topicId,
-                    caption: caption
-                });
-                
-                this.profilePicCache.set(jid, profilePicUrl);
-            }
-        } catch (error) {
-            logger.debug('Could not send profile picture:', error);
-        }
+async sendProfilePicture(topicId, jid, isUpdate = false) {
+    try {
+        if (!config.get('telegram.features.profilePicSync')) return;
+
+        /* debounce WhatsApp duplicate events */
+        if (Date.now() - (this._lastPicPush[jid] || 0) < 2000) return;
+        this._lastPicPush[jid] = Date.now();
+
+        const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+        if (!profilePicUrl) return;
+
+        /* skip if URL already seen (RAM cache OR DB) */
+        const cachedUrl = this.profilePicCache.get(jid);
+        const dbUrl     = (this.userMappings.get(jid) || {}).lastProfilePicUrl;
+        if (profilePicUrl === cachedUrl || profilePicUrl === dbUrl) return;
+
+        const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
+        await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
+            message_thread_id: topicId,
+            caption
+        });
+
+        /* update caches + DB */
+        this.profilePicCache.set(jid, profilePicUrl);
+        const userData = this.userMappings.get(jid) || {};
+        userData.lastProfilePicUrl = profilePicUrl;
+        await this.saveUserMapping(jid, userData);
+
+    } catch (err) {
+        logger.debug('Could not send profile picture:', err);
     }
+}
+
 
     // FIXED: Call notification handling
     async handleCallNotification(callEvent) {
