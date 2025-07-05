@@ -339,34 +339,34 @@ class TelegramBridge {
         }
     }
 
-    async setupTelegramHandlers() {
-        this.telegramBot.on('polling_error', (error) => {
-            this.pollingRetries++;
-            logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
-            
-            if (this.pollingRetries >= this.maxPollingRetries) {
-                logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
-                this.restartTelegramBot();
-            }
-        });
+async setupTelegramHandlers() {
+    this.telegramBot.on('polling_error', (error) => {
+        this.pollingRetries++;
+        logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
+        
+        if (this.pollingRetries >= this.maxPollingRetries) {
+            logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
+            this.restartTelegramBot();
+        }
+    });
 
-        this.telegramBot.on('error', (error) => {
-            logger.error('Telegram bot error:', error);
-        });
+    this.telegramBot.on('error', (error) => {
+        logger.error('Telegram bot error:', error);
+    });
 
-        this.telegramBot.on('message', this.wrapHandler(async (msg) => {
-            this normaalRetries = 0;
-            
-            if (msg.chat.type === 'private') {
-                this.botChatId = msg.chat.id;
-                await this.commands.handleCommand(msg);
-            } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
-                await this.handleTelegramMessage(msg);
-            }
-        }));
+    this.telegramBot.on('message', this.wrapHandler(async (msg) => {
+        this.pollingRetries = 0;
+        
+        if (msg.chat.type === 'private') {
+            this.botChatId = msg.chat.id;
+            await this.commands.handleCommand(msg);
+        } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
+            await this.handleTelegramMessage(msg);
+        }
+    }));
 
-        logger.info('📱 Telegram message handlers set up');
-    }
+    logger.info('📱 Telegram message handlers set up');
+}
 
     async restartTelegramBot() {
         try {
