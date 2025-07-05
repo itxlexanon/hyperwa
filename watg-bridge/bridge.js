@@ -1049,190 +1049,195 @@ class TelegramBridge {
         }
     }
 
-    async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
-        try {
-            logger.info(`📥 Processing ${mediaType} from WhatsApp`);
-            
-            let mediaMessage;
-            let fileName = `media_${Date.now()}`;
-            let caption = this.extractText(whatsappMsg);
-            
-            switch (mediaType) {
-                case 'image':
-                    mediaMessage = whatsappMsg.message.imageMessage;
-                    fileName += '.jpg';
-                    break;
-                case 'video':
-                    mediaMessage = whatsappMsg.message.videoMessage;
-                    fileName += '.mp4';
-                    break;
-                case 'video_note':
-                    mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage;
-                    fileName += '.mp4';
-                    break;
-                case 'audio':
-                    mediaMessage = whatsappMsg.message.audioMessage;
-                    fileName += '.ogg';
-                    break;
-                case 'document':
-                    mediaMessage = whatsappMsg.message.documentMessage;
-                    fileName = mediaMessage.fileName || `document_${Date.now()}`;
-                    break;
-                case 'sticker':
-                    mediaMessage = whatsappMsg.message.stickerMessage;
-                    fileName += '.webp';
-                    break;
-            }
+async function convertWebpToMp4(inputPath, outputPath) {
+    return new Promise((resolve, reject) => {
+        const command = `ffmpeg -y -i "${inputPath}" -movflags faststart -pix_fmt yuv420p "${outputPath}"`;
+        exec(command, (error) => {
+            if (error) reject(error);
+            else resolve(outputPath);
+        });
+    });
+}
 
-            if (!mediaMessage) {
-                logger.error(`❌ No media message found for ${mediaType}`);
-                return;
-            }
+async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
+    try {
+        logger.info(`📥 Processing ${mediaType} from WhatsApp`);
 
-            logger.info(`📥 Downloading ${mediaType} from WhatsApp: ${fileName}`);
+        let mediaMessage;
+        let fileName = `media_${Date.now()}`;
+        let caption = this.extractText(whatsappMsg);
 
-            const downloadType = mediaType === 'sticker' ? 'sticker' : 
-                                mediaType === 'video_note' ? 'video' : 
-                                mediaType;
-            
-            const stream = await downloadContentFromMessage(mediaMessage, downloadType);
-            
-            if (!stream) {
-                logger.error(`❌ Failed to get stream for ${mediaType}`);
-                return;
-            }
-            
-            const buffer = await this.streamToBuffer(stream);
-            
-            if (!buffer || buffer.length === 0) {
-                logger.error(`❌ Empty buffer for ${mediaType}`);
-                return;
-            }
-            
-            const filePath = path.join(this.tempDir, fileName);
-            await fs.writeFile(filePath, buffer);
+        switch (mediaType) {
+            case 'image':
+                mediaMessage = whatsappMsg.message.imageMessage;
+                fileName += '.jpg';
+                break;
+            case 'video':
+                mediaMessage = whatsappMsg.message.videoMessage;
+                fileName += '.mp4';
+                break;
+            case 'video_note':
+                mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage;
+                fileName += '.mp4';
+                break;
+            case 'audio':
+                mediaMessage = whatsappMsg.message.audioMessage;
+                fileName += '.ogg';
+                break;
+            case 'document':
+                mediaMessage = whatsappMsg.message.documentMessage;
+                fileName = mediaMessage.fileName || `document_${Date.now()}`;
+                break;
+            case 'sticker':
+                mediaMessage = whatsappMsg.message.stickerMessage;
+                fileName += '.webp';
+                break;
+        }
 
-            logger.info(`💾 Saved ${mediaType} to: ${filePath} (${buffer.length} bytes)`);
+        if (!mediaMessage) {
+            logger.error(`❌ No media message found for ${mediaType}`);
+            return;
+        }
 
-            const sender = whatsappMsg.key.remoteJid;
-            const participant = whatsappMsg.key.participant || sender;
-            
-            if (isOutgoing) {
-                caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
-            } else if (sender.endsWith('@g.us') && participant !== sender) {
-                const senderPhone = participant.split('@')[0];
-                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
-                caption = `👤 ${senderName}:\n${caption || ''}`;
-            }
+        const downloadType = mediaType === 'sticker' ? 'sticker'
+                          : mediaType === 'video_note' ? 'video'
+                          : mediaType;
 
-            const chatId = config.get('telegram.chatId');
-            
-            switch (mediaType) {
-                case 'image':
-                    await this.telegramBot.sendPhoto(chatId, filePath, {
+        const stream = await downloadContentFromMessage(mediaMessage, downloadType);
+        if (!stream) {
+            logger.error(`❌ Failed to get stream for ${mediaType}`);
+            return;
+        }
+
+        const buffer = await this.streamToBuffer(stream);
+        if (!buffer || buffer.length === 0) {
+            logger.error(`❌ Empty buffer for ${mediaType}`);
+            return;
+        }
+
+        const filePath = path.join(this.tempDir, fileName);
+        await fs.writeFile(filePath, buffer);
+        logger.info(`💾 Saved ${mediaType} to: ${filePath} (${buffer.length} bytes)`);
+
+        const sender = whatsappMsg.key.remoteJid;
+        const participant = whatsappMsg.key.participant || sender;
+
+        if (isOutgoing) {
+            caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
+        } else if (sender.endsWith('@g.us') && participant !== sender) {
+            const senderPhone = participant.split('@')[0];
+            const senderName = this.contactMappings.get(senderPhone) || senderPhone;
+            caption = `👤 ${senderName}:\n${caption || ''}`;
+        }
+
+        const chatId = config.get('telegram.chatId');
+
+        switch (mediaType) {
+            case 'image':
+                await this.telegramBot.sendPhoto(chatId, filePath, {
+                    message_thread_id: topicId,
+                    caption: caption
+                });
+                break;
+
+            case 'video':
+                if (mediaMessage.gifPlayback) {
+                    await this.telegramBot.sendAnimation(chatId, filePath, {
                         message_thread_id: topicId,
                         caption: caption
                     });
-                    break;
-                    
-                case 'video':
-                    if (mediaMessage.gifPlayback) {
-                        await this.telegramBot.sendAnimation(chatId, filePath, {
-                            message_thread_id: topicId,
-                            caption: caption
-                        });
-                    } else {
-                        await this.telegramBot.sendVideo(chatId, filePath, {
-                            message_thread_id: topicId,
-                            caption: caption
-                        });
-                    }
-                    break;
+                } else {
+                    await this.telegramBot.sendVideo(chatId, filePath, {
+                        message_thread_id: topicId,
+                        caption: caption
+                    });
+                }
+                break;
 
-                case 'video_note':
-                    // Convert to circular video note format for Telegram
-                    const videoNotePath = await this.convertToVideoNote(filePath);
-                    await this.telegramBot.sendVideoNote(chatId, videoNotePath, {
+            case 'video_note':
+                const videoNotePath = await this.convertToVideoNote(filePath);
+                await this.telegramBot.sendVideoNote(chatId, videoNotePath, {
+                    message_thread_id: topicId
+                });
+                if (caption) {
+                    await this.telegramBot.sendMessage(chatId, caption, {
                         message_thread_id: topicId
                     });
-                    if (caption) {
-                        await this.telegramBot.sendMessage(chatId, caption, {
+                }
+                if (videoNotePath !== filePath) {
+                    await fs.unlink(videoNotePath).catch(() => {});
+                }
+                break;
+
+            case 'audio':
+                if (mediaMessage.ptt) {
+                    await this.telegramBot.sendVoice(chatId, filePath, {
+                        message_thread_id: topicId,
+                        caption: caption
+                    });
+                } else {
+                    await this.telegramBot.sendAudio(chatId, filePath, {
+                        message_thread_id: topicId,
+                        caption: caption,
+                        title: mediaMessage.title || 'Audio'
+                    });
+                }
+                break;
+
+            case 'document':
+                await this.telegramBot.sendDocument(chatId, filePath, {
+                    message_thread_id: topicId,
+                    caption: caption
+                });
+                break;
+
+            case 'sticker':
+                const isAnimated = mediaMessage.isAnimated ||
+                    (mediaMessage.mimetype && mediaMessage.mimetype.includes('animated')) ||
+                    (mediaMessage.url && mediaMessage.url.includes('animated'));
+
+                if (isAnimated) {
+                    try {
+                        const mp4Path = filePath.replace('.webp', '.mp4');
+                        await convertWebpToMp4(filePath, mp4Path);
+
+                        await this.telegramBot.sendAnimation(chatId, mp4Path, {
+                            message_thread_id: topicId,
+                            caption: caption || 'Animated Sticker'
+                        });
+
+                        await fs.unlink(mp4Path).catch(() => {});
+                    } catch (error) {
+                        logger.debug('Failed to send animated sticker, fallback:', error);
+                        await this.telegramBot.sendSticker(chatId, filePath, {
                             message_thread_id: topicId
                         });
                     }
-                    // Clean up converted file
-                    if (videoNotePath !== filePath) {
-                        await fs.unlink(videoNotePath).catch(() => {});
-                    }
-                    break;
-                    
-                case 'audio':
-                    if (mediaMessage.ptt) {
-                        await this.telegramBot.sendVoice(chatId, filePath, {
-                            message_thread_id: topicId,
-                            caption: caption
+                } else {
+                    try {
+                        await this.telegramBot.sendSticker(chatId, filePath, {
+                            message_thread_id: topicId
                         });
-                    } else {
-                        await this.telegramBot.sendAudio(chatId, filePath, {
+                    } catch (error) {
+                        logger.debug('Static sticker failed, converting to PNG:', error);
+                        const pngPath = filePath.replace('.webp', '.png');
+                        await sharp(filePath).png().toFile(pngPath);
+                        await this.telegramBot.sendPhoto(chatId, pngPath, {
                             message_thread_id: topicId,
-                            caption: caption,
-                            title: mediaMessage.title || 'Audio'
+                            caption: caption || 'Sticker'
                         });
+                        await fs.unlink(pngPath).catch(() => {});
                     }
-                    break;
-                    
-                case 'document':
-                    await this.telegramBot.sendDocument(chatId, filePath, {
-                        message_thread_id: topicId,
-                        caption: caption
-                    });
-                    break;
-                    
-case 'sticker':
-    const stickerMessage = whatsappMsg.message.stickerMessage;
-    const isAnimated = stickerMessage.isAnimated || 
-                      (stickerMessage.mimetype && stickerMessage.mimetype.includes('animated')) ||
-                      (mediaMessage.url && mediaMessage.url.includes('animated'));
-
-    if (isAnimated) {
-        try {
-            await this.telegramBot.sendAnimation(chatId, filePath, {
-                message_thread_id: topicId,
-                caption: caption || 'Animated Sticker'
-            });
-        } catch (error) {
-            logger.debug('Failed to send as animation, trying as sticker:', error);
-            await this.telegramBot.sendSticker(chatId, filePath, {
-                message_thread_id: topicId
-            });
+                }
+                break;
         }
-    } else {
-        try {
-            await this.telegramBot.sendSticker(chatId, filePath, {
-                message_thread_id: topicId
-            });
-        } catch (stickerError) {
-            logger.debug('Failed to send as sticker, converting to PNG:', stickerError);
-            const pngPath = filePath.replace('.webp', '.png');
-            await sharp(filePath).png().toFile(pngPath);
 
-            await this.telegramBot.sendPhoto(chatId, pngPath, {
-                message_thread_id: topicId,
-                caption: caption || 'Sticker'
-            });
-            await fs.unlink(pngPath).catch(() => {});
-        }
+        logger.info(`✅ Successfully sent ${mediaType} to Telegram`);
+        await fs.unlink(filePath).catch(() => {});
+    } catch (error) {
+        logger.error(`❌ Failed to handle WhatsApp ${mediaType}:`, error);
     }
-    break;
-
-
-            logger.info(`✅ Successfully sent ${mediaType} to Telegram`);
-            await fs.unlink(filePath).catch(() => {});
-            
-        } catch (error) {
-            logger.error(`❌ Failed to handle WhatsApp ${mediaType}:`, error);
-        }
-    }
+}
 
     async convertToVideoNote(inputPath) {
         return new Promise((resolve, reject) => {
