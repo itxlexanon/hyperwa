@@ -1188,24 +1188,46 @@ class TelegramBridge {
                     });
                     break;
                     
-                case 'sticker':
-                    try {
-                        await this.telegramBot.sendSticker(chatId, filePath, {
-                            message_thread_id: topicId
-                        });
-                    } catch (stickerError) {
-                        logger.debug('Failed to send as sticker, converting to PNG:', stickerError);
-                        const pngPath = filePath.replace('.webp', '.png');
-                        await sharp(filePath).png().toFile(pngPath);
-                        
-                        await this.telegramBot.sendPhoto(chatId, pngPath, {
-                            message_thread_id: topicId,
-                            caption: caption || 'Sticker'
-                        });
-                        await fs.unlink(pngPath).catch(() => {});
-                    }
-                    break;
-            }
+case 'sticker':
+    const stickerMessage = whatsappMsg.message.stickerMessage;
+    const isAnimated = stickerMessage.isAnimated || 
+                      (stickerMessage.mimetype && stickerMessage.mimetype.includes('animated')) ||
+                      (mediaMessage.url && mediaMessage.url.includes('animated'));
+    
+    if (isAnimated) {
+        // Handle animated sticker
+        try {
+            // Try sending as video/animation first
+            await this.telegramBot.sendAnimation(chatId, filePath, {
+                message_thread_id: topicId,
+                caption: caption || 'Animated Sticker'
+            });
+        } catch (error) {
+            logger.debug('Failed to send as animation, trying as sticker:', error);
+            // Fallback to regular sticker
+            await this.telegramBot.sendSticker(chatId, filePath, {
+                message_thread_id: topicId
+            });
+        }
+    } else {
+        // Handle static sticker (existing code)
+        try {
+            await this.telegramBot.sendSticker(chatId, filePath, {
+                message_thread_id: topicId
+            });
+        } catch (stickerError) {
+            logger.debug('Failed to send as sticker, converting to PNG:', stickerError);
+            const pngPath = filePath.replace('.webp', '.png');
+            await sharp(filePath).png().toFile(pngPath);
+            
+            await this.telegramBot.sendPhoto(chatId, pngPath, {
+                message_thread_id: topicId,
+                caption: caption || 'Sticker'
+            });
+            await fs.unlink(pngPath).catch(() => {});
+        }
+    }
+    break;
 
             logger.info(`✅ Successfully sent ${mediaType} to Telegram`);
             await fs.unlink(filePath).catch(() => {});
@@ -1631,20 +1653,37 @@ async convertAnimatedSticker(inputPath) {
     const outputPath = inputPath.replace('.webp', '-converted.webp');
 
     return new Promise((resolve, reject) => {
-        ffmpeg(inputPath)
-            .outputOptions([
-                '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
-                '-loop', '0',
-                '-an',
-                '-vsync', '0'
-            ])
-            .outputFormat('webp')
-            .on('end', () => resolve(outputPath))
-            .on('error', (err) => {
-                logger.debug('Animated sticker conversion failed:', err.message);
-                resolve(null); // fallback
-            })
-            .save(outputPath);
+        // Check if input is already a supported format
+        ffmpeg.ffprobe(inputPath, (err, metadata) => {
+            if (err) {
+                logger.debug('Could not probe input file:', err);
+                resolve(null);
+                return;
+            }
+
+            const hasVideo = metadata.streams.some(stream => stream.codec_type === 'video');
+            
+            if (!hasVideo) {
+                // Not an animated file, return null for fallback
+                resolve(null);
+                return;
+            }
+
+            ffmpeg(inputPath)
+                .outputOptions([
+                    '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
+                    '-loop', '0',
+                    '-an',
+                    '-vsync', '0',
+                    '-f', 'webp'
+                ])
+                .on('end', () => resolve(outputPath))
+                .on('error', (err) => {
+                    logger.debug('Animated sticker conversion failed:', err.message);
+                    resolve(null);
+                })
+                .save(outputPath);
+        });
     });
 }
 
