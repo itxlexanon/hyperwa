@@ -1049,16 +1049,6 @@ class TelegramBridge {
         }
     }
 
-async function convertWebpToMp4(inputPath, outputPath) {
-    return new Promise((resolve, reject) => {
-        const command = `ffmpeg -y -i "${inputPath}" -movflags faststart -pix_fmt yuv420p "${outputPath}"`;
-        exec(command, (error) => {
-            if (error) reject(error);
-            else resolve(outputPath);
-        });
-    });
-}
-
 
 async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
     try {
