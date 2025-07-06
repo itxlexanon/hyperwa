@@ -107,17 +107,45 @@ class TelegramCommands {
         }
     }
 
-    async handleContacts(chatId) {
+async handleContacts(chatId, page = 1) {
+    try {
         const contacts = [...this.bridge.contactMappings.entries()];
+        const pageSize = 50;
+        const totalPages = Math.ceil(contacts.length / pageSize);
+
         if (contacts.length === 0) {
-            return this.bridge.telegramBot.sendMessage(chatId, '📞 No contacts found', { parse_mode: 'Markdown' });
+            return this.bridge.telegramBot.sendMessage(chatId, '📞 No contacts found.', {
+                parse_mode: 'Markdown'
+            });
         }
 
-        const contactList = contacts
+        // Clamp page to valid range
+        page = Math.max(1, Math.min(page, totalPages));
+        const start = (page - 1) * pageSize;
+        const end = start + pageSize;
+
+        const currentContacts = contacts.slice(start, end);
+        const contactText = currentContacts
             .map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`)
             .join('\n');
-        await this.bridge.telegramBot.sendMessage(chatId, `📞 *Contacts*\n\n${contactList}`, { parse_mode: 'Markdown' });
+
+        const navigationButtons = [];
+        if (page > 1) navigationButtons.push({ text: '⬅️ Previous', callback_data: `contacts_page_${page - 1}` });
+        if (page < totalPages) navigationButtons.push({ text: '➡️ Next', callback_data: `contacts_page_${page + 1}` });
+
+        await this.bridge.telegramBot.sendMessage(chatId,
+            `📞 *Contacts (Page ${page}/${totalPages})*\n\n${contactText}`, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [navigationButtons]
+            }
+        });
+    } catch (error) {
+        logger.error('❌ Failed to list contacts:', error);
+        await this.bridge.telegramBot.sendMessage(chatId, `❌ Error: ${error.message}`, { parse_mode: 'Markdown' });
     }
+}
+
 
     async handleSearchContact(chatId, args) {
         if (args.length === 0) {
