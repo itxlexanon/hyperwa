@@ -967,37 +967,45 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
     }
 
     // New function to handle profile picture updates
-    async updateProfilePicture(topicId, jid) {
-        try {
-            if (!config.get('telegram.features.profilePicSync')) {
-                logger.debug(`Profile picture sync disabled for ${jid}`);
-                return;
-            }
-
-            let profilePicUrl;
-            try {
-                profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-            } catch (error) {
-                logger.debug(`No profile picture available for ${jid}:`, error);
-                return;
-            }
-
-            if (!profilePicUrl) {
-                logger.debug(`No profile picture URL for ${jid}`);
-                return;
-            }
-
-            // Send updated profile picture
-            await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
-                message_thread_id: topicId,
-                caption: '📸 Profile picture updated'
-            });
-
-            logger.info(`📸 Sent updated profile picture for ${jid} to topic ${topicId}`);
-        } catch (error) {
-            logger.error(`❌ Failed to update profile picture for ${jid}:`, error);
+async updateProfilePicture(topicId, jid) {
+    try {
+        if (!config.get('telegram.features.profilePicSync')) {
+            logger.debug(`Profile picture sync disabled for ${jid}`);
+            return;
         }
+
+        // Verify topic exists
+        const topicExists = await this.verifyTopicExists(topicId);
+        if (!topicExists) {
+            logger.warn(`⚠️ Topic ${topicId} for ${jid} does not exist, skipping profile picture update`);
+            return;
+        }
+
+        let profilePicUrl;
+        try {
+            profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+            logger.debug(`📸 Fetched profile picture URL for ${jid}: ${profilePicUrl}`);
+        } catch (error) {
+            logger.debug(`📸 No profile picture available for ${jid}:`, error);
+            return;
+        }
+
+        if (!profilePicUrl) {
+            logger.debug(`📸 No profile picture URL for ${jid}`);
+            return;
+        }
+
+        // Send updated profile picture
+        await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
+            message_thread_id: topicId,
+            caption: '📸 Profile picture updated'
+        });
+
+        logger.info(`📸 Sent updated profile picture for ${jid} to topic ${topicId}`);
+    } catch (error) {
+        logger.error(`❌ Failed to update profile picture for ${jid} to topic ${topicId}:`, error);
     }
+}
 
     async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
         try {
@@ -1856,6 +1864,7 @@ async setupWhatsAppHandlers() {
 
     this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
         try {
+            logger.debug(`📞 Received contacts.update event for ${contacts.length} contacts`);
             let updatedCount = 0;
             for (const contact of contacts) {
                 if (contact.id && contact.name && contact.id !== 'status@broadcast' && !contact.name.startsWith('+') && contact.name.length > 2) {
@@ -1875,7 +1884,7 @@ async setupWhatsAppHandlers() {
                                 });
                                 logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
                             } catch (error) {
-                                logger.debug(`Could not update topic name for ${phone}:`, error);
+                                logger.error(`❌ Could not update topic name for ${phone}:`, error);
                             }
                         }
                     }
@@ -1883,12 +1892,15 @@ async setupWhatsAppHandlers() {
                     // Send profile picture update if contact has a mapped topic
                     if (this.chatMappings.has(contact.id)) {
                         const topicId = this.chatMappings.get(contact.id);
+                        logger.debug(`📸 Attempting profile picture update for ${contact.id} to topic ${topicId}`);
                         await this.updateProfilePicture(topicId, contact.id);
                     }
                 }
             }
             if (updatedCount > 0) {
                 logger.info(`✅ Processed ${updatedCount} contact updates`);
+            } else {
+                logger.debug('📞 No valid contact updates to process');
             }
         } catch (error) {
             logger.error('❌ Failed to process contact updates:', error);
