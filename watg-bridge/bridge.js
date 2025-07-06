@@ -1897,14 +1897,14 @@ async setupWhatsAppHandlers() {
         return;
     }
 
-    // FIXED: Prevent profile pic updates on initial contact sync
+    // This flag ensures profile picture updates are only processed after an initial sync phase
+    // to prevent excessive profile pic sends during initial load.
     let initialSyncComplete = false;
     setTimeout(() => {
         initialSyncComplete = true;
         logger.debug('Initial contact sync period ended');
     }, 30000); // 30 seconds after connection
 
-    // FIXED: Single contacts.update handler
     this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
         try {
             let updatedCount = 0;
@@ -1913,7 +1913,7 @@ async setupWhatsAppHandlers() {
                     const phone = contact.id.split('@')[0];
                     const oldName = this.contactMappings.get(phone);
                     
-                    // Only update if it's a real contact name
+                    // Only update contact name if it's a real name and different
                     if (contact.name !== phone && 
                         !contact.name.startsWith('+') && 
                         contact.name.length > 2 &&
@@ -1922,7 +1922,7 @@ async setupWhatsAppHandlers() {
                         logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
                         updatedCount++;
                         
-                        // Update topic name immediately
+                        // Update topic name immediately if mapped
                         const jid = contact.id;
                         if (this.chatMappings.has(jid)) {
                             const topicId = this.chatMappings.get(jid);
@@ -1938,7 +1938,8 @@ async setupWhatsAppHandlers() {
                     }
                 }
                 
-                // FIXED: Only handle profile picture updates after initial sync
+                // --- MODIFIED: Profile Picture Update Handling ---
+                // Only handle profile picture updates after initial sync period and if topic exists
                 if (initialSyncComplete && contact.id && this.chatMappings.has(contact.id)) {
                     const topicId = this.chatMappings.get(contact.id);
                     
@@ -1946,19 +1947,17 @@ async setupWhatsAppHandlers() {
                         const newProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(contact.id, 'image');
                         const oldProfilePicUrl = this.profilePicCache.get(contact.id);
                         
-                        // FIXED: Only send if URL actually changed and it's not a new topic
-                        const topicCreated = this.topicCreationTime.get(topicId);
-                        const isNewTopic = topicCreated && (Date.now() - topicCreated < 10000);
-                        
-                        if (newProfilePicUrl && newProfilePicUrl !== oldProfilePicUrl && !isNewTopic) {
-                            // FIXED: Add delay to prevent rapid fire
-                            setTimeout(async () => {
-                                await this.sendProfilePicture(topicId, contact.id, true);
-                            }, 2000);
-                            logger.info(`📸 Profile picture updated for ${contact.id}`);
+                        // Check if the URL has actually changed.
+                        // The 'isUpdate: true' parameter in syncProfilePicture forces a send if needed,
+                        // but we do the initial comparison here to avoid unnecessary calls.
+                        if (newProfilePicUrl && newProfilePicUrl !== oldProfilePicUrl) {
+                            // Direct await call, no setTimeout here.
+                            await this.syncProfilePicture(topicId, contact.id, true);
+                            logger.info(`📸 Profile picture updated and synced for ${contact.id}`);
                         }
                     } catch (error) {
-                        logger.debug(`Could not check profile picture for ${contact.id}:`, error);
+                        // Log any errors specific to fetching/comparing profile picture URLs
+                        logger.debug(`Could not check profile picture for ${contact.id} in update listener:`, error);
                     }
                 }
             }
@@ -1966,7 +1965,7 @@ async setupWhatsAppHandlers() {
                 logger.info(`✅ Processed ${updatedCount} contact updates`);
             }
         } catch (error) {
-            logger.error('❌ Failed to process contact updates:', error);
+            logger.error('❌ Failed to process contact updates in handler:', error);
         }
     });
 
@@ -1995,7 +1994,7 @@ async setupWhatsAppHandlers() {
         }
     });
 
-    // FIXED: Call event handler
+    // Call event handler
     this.whatsappBot.sock.ev.on('call', async (callEvents) => {
         for (const callEvent of callEvents) {
             await this.handleCallNotification(callEvent);
@@ -2004,7 +2003,6 @@ async setupWhatsAppHandlers() {
 
     logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
 }
-
     
     async shutdown() {
         logger.info('🛑 Shutting down Telegram bridge...');
