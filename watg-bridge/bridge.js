@@ -935,62 +935,68 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
 }
 
 
-async sendProfilePicture(topicId, jid, isUpdate = false) {
+async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
     try {
-        if (!config.get('telegram.features.profilePicSync')) return;
-
-        const processingKey = `${jid}_${topicId}`;
-        if (this.profilePicProcessing.has(processingKey)) {
-            logger.debug(`Profile picture already processing for ${jid}`);
-            return;
-        }
-
-        this.profilePicProcessing.add(processingKey);
-
-        try {
-            const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-
-            const topicCreated = this.topicCreationTime.get(topicId);
-            const isNewTopic = topicCreated && (Date.now() - topicCreated < 10000); // 10 seconds
-            const cachedUrl = this.profilePicCache.get(jid);
-
-            // ✅ Step 1: Always send a welcome message first
-            await this.telegramBot.sendMessage(config.get('telegram.chatId'), `👋 Welcome!`, {
-                message_thread_id: topicId
-            });
-
-            // ✅ Step 2: Then send profile picture (if needed)
-            if (profilePicUrl && (isNewTopic || cachedUrl !== profilePicUrl || isUpdate)) {
-                const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
-
-                await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
-                    message_thread_id: topicId,
-                    caption: caption
-                });
-
-                this.profilePicCache.set(jid, profilePicUrl);
-                logger.debug(`✅ Sent profile picture for ${jid} (new topic: ${isNewTopic})`);
-            } else {
-                logger.debug(`Profile picture unchanged for ${jid}, skipping`);
+        const chatId = config.get('telegram.chatId');
+        const phone = jid.split('@')[0];
+        const contactName = this.contactMappings.get(phone) || `+${phone}`;
+        const participant = whatsappMsg.key.participant || jid;
+        const userInfo = this.userMappings.get(participant);
+        const handleName = whatsappMsg.pushName || userInfo?.name || 'Unknown';
+        
+        let welcomeText = '';
+        
+        if (isGroup) {
+            try {
+                const groupMeta = await this.whatsappBot.sock.groupMetadata(jid);
+                welcomeText = `🏷️ **Group Information**\n\n` +
+                             `📝 **Name:** ${groupMeta.subject}\n` +
+                             `👥 **Participants:** ${groupMeta.participants.length}\n` +
+                             `🆔 **Group ID:** \`${jid}\`\n` +
+                             `📅 **Created:** ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
+                             `💬 Messages from this group will appear here`;
+            } catch (error) {
+                welcomeText = `🏷️ **Group Chat**\n\n💬 Messages from this group will appear here`;
+                logger.debug(`Could not fetch group metadata for ${jid}:`, error);
+            }
+        } else {
+            // Get user status/bio
+            let userStatus = '';
+            try {
+                const status = await this.whatsappBot.sock.fetchStatus(jid);
+                if (status?.status) {
+                    userStatus = `📝 **Status:** ${status.status}\n`;
+                }
+            } catch (error) {
+                logger.debug(`Could not fetch status for ${jid}:`, error);
             }
 
-            // ✅ Step 3: Optional custom message after short delay
-            await new Promise(resolve => setTimeout(resolve, 1200)); // 1.2 sec delay
-
-            await this.telegramBot.sendMessage(config.get('telegram.chatId'), `💬 How can I help you today?`, {
-                message_thread_id: topicId
-            });
-
-        } finally {
-            this.profilePicProcessing.delete(processingKey);
+            welcomeText = `👤 **Contact Information**\n\n` +
+                         `📝 **Name:** ${contactName}\n` +
+                         `📱 **Phone:** +${phone}\n` +
+                         `🖐️ **Handle:** ${handleName}\n` +
+                         userStatus +
+                         `🆔 **WhatsApp ID:** \`${jid}\`\n` +
+                         `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
+                         `💬 Messages with this contact will appear here`;
         }
 
+        const sentMessage = await this.telegramBot.sendMessage(chatId, welcomeText, {
+            message_thread_id: topicId,
+            parse_mode: 'Markdown'
+        });
+
+        await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id);
+        
+        // FIXED: Add delay before sending profile picture
+        setTimeout(async () => {
+            await this.sendProfilePicture(topicId, jid, false);
+        }, 2000);
+
     } catch (error) {
-        logger.debug('Could not send profile picture:', error);
-        this.profilePicProcessing.delete(`${jid}_${topicId}`);
+        logger.error('❌ Failed to send welcome message:', error);
     }
 }
-
 
 
     // FIXED: Profile picture sync
@@ -1012,9 +1018,13 @@ async sendProfilePicture(topicId, jid, isUpdate = false) {
             const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
             
             if (profilePicUrl) {
-                // FIXED: Check if URL changed before sending
+                // FIXED: For new topics, always send profile picture
+                const topicCreated = this.topicCreationTime.get(topicId);
+                const isNewTopic = topicCreated && (Date.now() - topicCreated < 10000); // 10 seconds
+                
+                // FIXED: Check if URL changed before sending (but skip for new topics)
                 const cachedUrl = this.profilePicCache.get(jid);
-                if (cachedUrl === profilePicUrl && !isUpdate) {
+                if (!isNewTopic && cachedUrl === profilePicUrl && !isUpdate) {
                     logger.debug(`Profile picture unchanged for ${jid}, skipping`);
                     return;
                 }
@@ -1028,7 +1038,7 @@ async sendProfilePicture(topicId, jid, isUpdate = false) {
                 
                 // FIXED: Update cache after successful send
                 this.profilePicCache.set(jid, profilePicUrl);
-                logger.debug(`✅ Sent profile picture for ${jid}`);
+                logger.debug(`✅ Sent profile picture for ${jid} (new topic: ${isNewTopic})`);
             }
         } finally {
             // FIXED: Always remove from processing set
