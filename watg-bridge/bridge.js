@@ -885,38 +885,6 @@ async recreateMissingTopics() {
         }
     }
     // New function to send initial profile picture with welcome message
-    async sendInitialProfilePicture(topicId, jid) {
-        try {
-            if (!config.get('telegram.features.profilePicSync')) {
-                logger.debug(`Profile picture sync disabled for ${jid}`);
-                return;
-            }
-
-            let profilePicUrl;
-            try {
-                profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-                logger.debug(`📸 Fetched initial profile picture URL for ${jid}: ${profilePicUrl}`);
-            } catch (error) {
-                logger.debug(`📸 No profile picture available for ${jid}:`, error);
-                return;
-            }
-
-            if (!profilePicUrl) {
-                logger.debug(`📸 No profile picture URL for ${jid}`);
-                return;
-            }
-
-            await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
-                message_thread_id: topicId,
-                caption: '📸 Profile Picture'
-            });
-
-            logger.info(`📸 Sent initial profile picture for ${jid} to topic ${topicId}`);
-        } catch (error) {
-            logger.error(`❌ Failed to send initial profile picture for ${jid} to topic ${topicId}:`, error, error.stack);
-        }
-    }
-
     async updateProfilePicture(topicId, jid) {
         try {
             if (!config.get('telegram.features.profilePicSync')) {
@@ -924,7 +892,6 @@ async recreateMissingTopics() {
                 return;
             }
 
-            // Verify topic exists
             const topicExists = await this.verifyTopicExists(topicId);
             if (!topicExists) {
                 logger.warn(`⚠️ Topic ${topicId} for ${jid} does not exist, skipping profile picture update`);
@@ -952,7 +919,11 @@ async recreateMissingTopics() {
 
             logger.info(`📸 Sent updated profile picture for ${jid} to topic ${topicId}`);
         } catch (error) {
-            logger.error(`❌ Failed to update profile picture for ${jid} to topic $dWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
+            logger.error(`❌ Failed to update profile picture for ${jid} to topic ${topicId}:`, error, error.stack);
+        }
+    }
+
+    async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
         try {
             const chatId = config.get('telegram.chatId');
             const phone = jid.split('@')[0];
@@ -964,11 +935,11 @@ async recreateMissingTopics() {
                 try {
                     const groupMeta = await this.whatsappBot.sock.groupMetadata(jid);
                     welcomeText = `🏷️ **Group Information**\n\n` +
-                                 `📝 **Name:** ${groupMeta.subject}\n` +
-                                 `👥 **Participants:** ${groupMeta.participants.length}\n` +
-                                 `🆔 **Group ID:** \`${jid}\`\n` +
-                                 `📅 **Created:** ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
-                                 `💬 Messages from this group will appear here`;
+                                  `📝 **Name:** ${groupMeta.subject}\n` +
+                                  `👥 **Participants:** ${groupMeta.participants.length}\n` +
+                                  `🆔 **Group ID:** \`${jid}\`\n` +
+                                  `📅 **Created:** ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
+                                  `💬 Messages from this group will appear here`;
                 } catch (error) {
                     welcomeText = `🏷️ **Group Chat**\n\n💬 Messages from this group will appear here`;
                     logger.debug(`Could not fetch group metadata for ${jid}:`, error);
@@ -985,12 +956,12 @@ async recreateMissingTopics() {
                 }
 
                 welcomeText = `👤 **Contact Information**\n\n` +
-                             `📝 **Name:** ${contactName}\n` +
-                             `📱 **Phone:** +${phone}\n` +
-                             userStatus +
-                             `🆔 **WhatsApp ID:** \`${jid}\`\n` +
-                             `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
-                             `💬 Messages with this contact will appear here`;
+                              `📝 **Name:** ${contactName}\n` +
+                              `📱 **Phone:** +${phone}\n` +
+                              userStatus +
+                              `🆔 **WhatsApp ID:** \`${jid}\`\n` +
+                              `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
+                              `💬 Messages with this contact will appear here`;
             }
 
             const sentMessage = await this.telegramBot.sendMessage(chatId, welcomeText, {
@@ -999,12 +970,12 @@ async recreateMissingTopics() {
             });
 
             await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id);
-            // Removed sendInitialProfilePicture to prevent message-driven updates
             logger.info(`✅ Sent welcome message for ${jid} to topic ${topicId}`);
         } catch (error) {
             logger.error(`❌ Failed to send welcome message for ${jid} to topic ${topicId}:`, error, error.stack);
         }
     }
+
 
 
     // FIXED: Call notification handling
