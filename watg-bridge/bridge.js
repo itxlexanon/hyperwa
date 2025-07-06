@@ -989,9 +989,8 @@ async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
         await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id);
         
         // FIXED: Add delay before sending profile picture
-        setTimeout(async () => {
-            await this.sendProfilePicture(topicId, jid, false);
-        }, 2000);
+await this.sendProfilePicture(topicId, jid, false);
+
 
     } catch (error) {
         logger.error('❌ Failed to send welcome message:', error);
