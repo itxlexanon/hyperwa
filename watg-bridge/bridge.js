@@ -13,6 +13,7 @@ const ffmpeg = require('fluent-ffmpeg');
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 const { exec } = require('child_process');
 
+
 class TelegramBridge {
     constructor(whatsappBot) {
         this.whatsappBot = whatsappBot;
@@ -91,12 +92,9 @@ class TelegramBridge {
             await this.db.command({ ping: 1 });
             logger.info('✅ MongoDB connection successful');
             this.collection = this.db.collection('bridge');
-            
-            // Create indexes
             await this.collection.createIndex({ type: 1, 'data.whatsappJid': 1 }, { unique: true, partialFilterExpression: { type: 'chat' } });
             await this.collection.createIndex({ type: 1, 'data.whatsappId': 1 }, { unique: true, partialFilterExpression: { type: 'user' } });
             await this.collection.createIndex({ type: 1, 'data.phone': 1 }, { unique: true, partialFilterExpression: { type: 'contact' } });
-            
             logger.info('📊 Database initialized for Telegram bridge (single collection: bridge)');
         } catch (error) {
             logger.error('❌ Failed to initialize database:', error);
@@ -138,17 +136,16 @@ class TelegramBridge {
 
     async saveChatMapping(whatsappJid, telegramTopicId, profilePicUrl = null) {
         try {
-            const updateData = {
+            const updateData = { 
                 type: 'chat',
                 data: { 
                     whatsappJid, 
                     telegramTopicId, 
                     createdAt: new Date(),
                     lastActivity: new Date()
-                }
+                } 
             };
 
-            // Include profile picture URL if provided
             if (profilePicUrl) {
                 updateData.data.profilePicUrl = profilePicUrl;
             }
@@ -160,14 +157,12 @@ class TelegramBridge {
             );
             
             this.chatMappings.set(whatsappJid, telegramTopicId);
-            
-            // Update profile picture cache
             if (profilePicUrl) {
                 this.profilePicCache.set(whatsappJid, profilePicUrl);
             }
-            
             this.topicVerificationCache.delete(whatsappJid);
-            logger.debug(`✅ Saved chat mapping: ${whatsappJid} -> ${telegramTopicId}${profilePicUrl ? ' with profile pic' : ''}`);
+            
+            logger.debug(`✅ Saved chat mapping: ${whatsappJid} -> ${telegramTopicId}${profilePicUrl ? ' (with profile pic)' : ''}`);
         } catch (error) {
             logger.error('❌ Failed to save chat mapping:', error);
         }
@@ -177,13 +172,13 @@ class TelegramBridge {
         try {
             await this.collection.updateOne(
                 { type: 'chat', 'data.whatsappJid': whatsappJid },
-                { $set: { 'data.profilePicUrl': profilePicUrl, 'data.profilePicUpdated': new Date() } }
+                { $set: { 'data.profilePicUrl': profilePicUrl, 'data.lastProfilePicUpdate': new Date() } }
             );
             
             this.profilePicCache.set(whatsappJid, profilePicUrl);
-            logger.debug(`✅ Updated profile picture URL for ${whatsappJid}`);
+            logger.debug(`✅ Updated profile pic URL for ${whatsappJid}: ${profilePicUrl}`);
         } catch (error) {
-            logger.error('❌ Failed to update profile picture URL:', error);
+            logger.error('❌ Failed to update profile pic URL:', error);
         }
     }
 
@@ -258,15 +253,16 @@ class TelegramBridge {
                 const phone = jid.split('@')[0];
                 let contactName = null;
                 
-                if (contact.name && contact.name !== phone && !contact.name.startsWith('+')) {
+                // Extract name from contact - prioritize saved contact name
+                if (contact.name && contact.name !== phone && !contact.name.startsWith('+') && contact.name.length > 2) {
                     contactName = contact.name;
-                } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+')) {
+                } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+') && contact.notify.length > 2) {
                     contactName = contact.notify;
-                } else if (contact.verifiedName && contact.verifiedName !== phone) {
+                } else if (contact.verifiedName && contact.verifiedName !== phone && contact.verifiedName.length > 2) {
                     contactName = contact.verifiedName;
                 }
                 
-                if (contactName && contactName.length > 2) {
+                if (contactName) {
                     const existingName = this.contactMappings.get(phone);
                     if (existingName !== contactName) {
                         await this.saveContactMapping(phone, contactName);
@@ -301,18 +297,29 @@ class TelegramBridge {
             for (const [jid, topicId] of this.chatMappings.entries()) {
                 if (!jid.endsWith('@g.us') && jid !== 'status@broadcast' && jid !== 'call@broadcast') {
                     const phone = jid.split('@')[0];
-                    const contactName = this.contactMappings.get(phone) || `+${phone}`;
+                    const contactName = this.contactMappings.get(phone);
                     
-                    try {
-                        await this.telegramBot.editForumTopic(chatId, topicId, {
-                            name: contactName
-                        });
-                        logger.debug(`📝 Updated topic name for ${phone} to ${contactName}`);
-                        updatedCount++;
-                    } catch (error) {
-                        logger.error(`❌ Failed to update topic ${topicId} for ${phone}:`, error);
+                    if (contactName) {
+                        try {
+                            // Get current topic info first
+                            const currentTopic = await this.telegramBot.getChat(chatId);
+                            logger.debug(`📝 Attempting to update topic ${topicId} for ${phone} to "${contactName}"`);
+                            
+                            await this.telegramBot.editForumTopic(chatId, topicId, {
+                                name: contactName
+                            });
+                            
+                            logger.info(`📝 ✅ Updated topic name for ${phone}: "${contactName}"`);
+                            updatedCount++;
+                        } catch (error) {
+                            logger.error(`❌ Failed to update topic ${topicId} for ${phone} to "${contactName}":`, error.message);
+                        }
+                        
+                        // Add delay to avoid rate limits
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                    } else {
+                        logger.debug(`📝 ⚠️ No contact name found for ${phone}, keeping current topic name`);
                     }
-                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
             }
             
@@ -579,7 +586,7 @@ class TelegramBridge {
             
             for (const jid of toRecreate) {
                 this.chatMappings.delete(jid);
-                this.profilePicCache.delete(jid); // Clear profile pic cache for deleted topics
+                this.profilePicCache.delete(jid); // Clear profile pic cache
                 await this.collection.deleteOne({ 
                     type: 'chat', 
                     'data.whatsappJid': jid 
@@ -898,26 +905,29 @@ class TelegramBridge {
                 iconColor = 0x6FB9F0;
             } else {
                 const phone = chatJid.split('@')[0];
-                const contactName = this.contactMappings.get(phone) || `+${phone}`;
-                topicName = contactName;
+                // FIXED: Use contact name from contacts list, not handle name
+                const contactName = this.contactMappings.get(phone);
+                topicName = contactName || `+${phone}`;
+                logger.debug(`📝 Creating topic for ${phone}: "${topicName}" (contact: ${contactName ? 'found' : 'not found'})`);
             }
 
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
 
-            // Get initial profile picture URL during topic creation
+            // Get initial profile picture URL
             let initialProfilePicUrl = null;
-            if (!isStatus && !isCall && config.get('telegram.features.profilePicSync')) {
+            if (!isStatus && !isCall) {
                 try {
                     initialProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(chatJid, 'image');
+                    logger.debug(`📸 Initial profile pic URL for ${chatJid}: ${initialProfilePicUrl || 'none'}`);
                 } catch (error) {
-                    logger.debug(`Could not fetch initial profile picture for ${chatJid}:`, error);
+                    logger.debug(`📸 No profile picture found for ${chatJid}`);
                 }
             }
 
             await this.saveChatMapping(chatJid, topic.message_thread_id, initialProfilePicUrl);
-            logger.info(`🆕 Created Telegram topic: ${topicName} (ID: ${topic.message_thread_id}) for ${chatJid}`);
+            logger.info(`🆕 Created Telegram topic: "${topicName}" (ID: ${topic.message_thread_id}) for ${chatJid}`);
             
             if (!isStatus && !isCall) {
                 await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg, initialProfilePicUrl);
@@ -981,8 +991,8 @@ class TelegramBridge {
             });
 
             await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id);
-
-            // Send profile picture only if we have the URL and it's enabled
+            
+            // Send initial profile picture if available
             if (initialProfilePicUrl) {
                 await this.sendProfilePictureWithUrl(topicId, jid, initialProfilePicUrl, false);
             }
@@ -992,55 +1002,80 @@ class TelegramBridge {
         }
     }
 
-    // FIXED: Enhanced profile picture handling with URL checking
     async sendProfilePicture(topicId, jid, isUpdate = false) {
         try {
-            if (!config.get('telegram.features.profilePicSync')) return;
+            if (!config.get('telegram.features.profilePicSync')) {
+                logger.debug(`📸 Profile pic sync disabled for ${jid}`);
+                return;
+            }
             
-            // Get current profile picture URL
+            logger.debug(`📸 Checking profile picture for ${jid} (update: ${isUpdate})`);
+            
             let currentProfilePicUrl = null;
             try {
                 currentProfilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+                logger.debug(`📸 Current profile pic URL for ${jid}: ${currentProfilePicUrl || 'none'}`);
             } catch (error) {
-                logger.debug(`Could not fetch profile picture for ${jid}:`, error);
-                return; // No profile picture available
+                logger.debug(`📸 No profile picture found for ${jid}: ${error.message}`);
             }
-
-            // Get stored profile picture URL from cache/database
-            const storedProfilePicUrl = this.profilePicCache.get(jid);
-
-            // Check if URL has changed or is null
-            if (storedProfilePicUrl === currentProfilePicUrl) {
-                logger.debug(`📸 Profile picture URL unchanged for ${jid}, skipping...`);
-                return; // Skip if URL is the same
+            
+            const cachedProfilePicUrl = this.profilePicCache.get(jid);
+            logger.debug(`📸 Cached profile pic URL for ${jid}: ${cachedProfilePicUrl || 'none'}`);
+            
+            // Check if URL has changed
+            if (currentProfilePicUrl === cachedProfilePicUrl) {
+                logger.debug(`📸 ⏭️ Profile picture URL unchanged for ${jid}, skipping send`);
+                return;
             }
-
-            // Send profile picture since URL has changed or is new
-            await this.sendProfilePictureWithUrl(topicId, jid, currentProfilePicUrl, isUpdate);
             
-            // Update stored URL
-            await this.updateProfilePicUrl(jid, currentProfilePicUrl);
-            
-            logger.info(`📸 Profile picture ${isUpdate ? 'updated' : 'sent'} for ${jid}`);
-            
+            if (currentProfilePicUrl) {
+                const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
+                
+                logger.info(`📸 Sending ${isUpdate ? 'updated' : 'initial'} profile picture for ${jid}`);
+                
+                await this.telegramBot.sendPhoto(config.get('telegram.chatId'), currentProfilePicUrl, {
+                    message_thread_id: topicId,
+                    caption: caption
+                });
+                
+                // Update cache and database
+                await this.updateProfilePicUrl(jid, currentProfilePicUrl);
+                logger.info(`📸 ✅ Profile picture ${isUpdate ? 'update' : 'sent'} for ${jid}`);
+            } else {
+                logger.debug(`📸 No profile picture available for ${jid}`);
+            }
         } catch (error) {
-            logger.debug('Could not handle profile picture:', error);
+            logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error);
         }
     }
 
     async sendProfilePictureWithUrl(topicId, jid, profilePicUrl, isUpdate = false) {
         try {
-            if (!profilePicUrl || !config.get('telegram.features.profilePicSync')) return;
+            if (!config.get('telegram.features.profilePicSync')) {
+                logger.debug(`📸 Profile pic sync disabled for ${jid}`);
+                return;
+            }
+            
+            if (!profilePicUrl) {
+                logger.debug(`📸 No profile picture URL provided for ${jid}`);
+                return;
+            }
             
             const caption = isUpdate ? '📸 Profile picture updated' : '📸 Profile Picture';
+            
+            logger.info(`📸 Sending ${isUpdate ? 'updated' : 'initial'} profile picture for ${jid}`);
             
             await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
                 message_thread_id: topicId,
                 caption: caption
             });
             
+            // Update cache and database
+            await this.updateProfilePicUrl(jid, profilePicUrl);
+            logger.info(`📸 ✅ Profile picture ${isUpdate ? 'update' : 'sent'} for ${jid}`);
+            
         } catch (error) {
-            logger.debug('Could not send profile picture with URL:', error);
+            logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error);
         }
     }
 
@@ -1827,6 +1862,7 @@ class TelegramBridge {
             return;
         }
 
+        // FIXED: Enhanced contact sync and topic name update handlers
         this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
             try {
                 let updatedCount = 0;
@@ -1835,31 +1871,31 @@ class TelegramBridge {
                         const phone = contact.id.split('@')[0];
                         const oldName = this.contactMappings.get(phone);
                         
+                        // Only update if it's a real contact name (not handle name)
                         if (contact.name !== phone && 
                             !contact.name.startsWith('+') && 
                             contact.name.length > 2 &&
                             oldName !== contact.name) {
+                            
                             await this.saveContactMapping(phone, contact.name);
                             logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
                             updatedCount++;
                             
+                            // Update topic name immediately
                             const jid = contact.id;
                             if (this.chatMappings.has(jid)) {
                                 const topicId = this.chatMappings.get(jid);
                                 try {
+                                    logger.debug(`📝 Updating topic ${topicId} name from "${oldName || 'unknown'}" to "${contact.name}"`);
+                                    
                                     await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
                                         name: contact.name
                                     });
-                                    logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
+                                    
+                                    logger.info(`📝 ✅ Updated topic name for ${phone}: "${contact.name}"`);
                                 } catch (error) {
-                                    logger.debug(`Could not update topic name for ${phone}:`, error);
+                                    logger.error(`📝 ❌ Could not update topic name for ${phone}:`, error.message);
                                 }
-                            }
-
-                            // FIXED: Check for profile picture updates
-                            if (this.chatMappings.has(contact.id)) {
-                                const topicId = this.chatMappings.get(contact.id);
-                                await this.sendProfilePicture(topicId, contact.id, true);
                             }
                         }
                     }
@@ -1878,13 +1914,32 @@ class TelegramBridge {
                 for (const contact of contacts) {
                     if (contact.id && contact.name) {
                         const phone = contact.id.split('@')[0];
+                        // Only save real contact names
                         if (contact.name !== phone && 
                             !contact.name.startsWith('+') && 
                             contact.name.length > 2 &&
                             !this.contactMappings.has(phone)) {
+                            
                             await this.saveContactMapping(phone, contact.name);
                             logger.info(`📞 New contact: ${phone} -> ${contact.name}`);
                             newCount++;
+                            
+                            // Update topic name if topic exists
+                            const jid = contact.id;
+                            if (this.chatMappings.has(jid)) {
+                                const topicId = this.chatMappings.get(jid);
+                                try {
+                                    logger.debug(`📝 Updating new contact topic ${topicId} to "${contact.name}"`);
+                                    
+                                    await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                        name: contact.name
+                                    });
+                                    
+                                    logger.info(`📝 ✅ Updated new contact topic name for ${phone}: "${contact.name}"`);
+                                } catch (error) {
+                                    logger.error(`📝 ❌ Could not update new contact topic name for ${phone}:`, error.message);
+                                }
+                            }
                         }
                     }
                 }
@@ -1893,6 +1948,19 @@ class TelegramBridge {
                 }
             } catch (error) {
                 logger.error('❌ Failed to process new contacts:', error);
+            }
+        });
+
+        // FIXED: Profile picture update handler with proper URL checking
+        this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
+            for (const contact of contacts) {
+                if (contact.id && this.chatMappings.has(contact.id)) {
+                    const topicId = this.chatMappings.get(contact.id);
+                    
+                    // Check for profile picture updates
+                    logger.debug(`📸 Checking profile picture update for ${contact.id}`);
+                    await this.sendProfilePicture(topicId, contact.id, true);
+                }
             }
         });
 
