@@ -22,8 +22,6 @@ class TelegramBridge {
         this.chatMappings = new Map();
         this.userMappings = new Map();
         this.contactMappings = new Map();
-        this.profilePicCache = new Map();
-        this.profilePicProcessing = new Set(); // Track processing profile pics
         this.tempDir = path.join(__dirname, '../temp');
         this.isProcessing = false;
         this.activeCallNotifications = new Map();
