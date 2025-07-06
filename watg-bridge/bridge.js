@@ -52,22 +52,8 @@ class TelegramBridge {
             await fs.ensureDir(this.tempDir);
             
             this.telegramBot = new TelegramBot(token, { 
-                polling: {
-                    interval: 1000,
-                    autoStart: true,
-                    params: {
-                        timeout: 10,
-                        allowed_updates: ['message', 'callback_query']
-                    }
-                },
-                onlyFirstMatch: true,
-                request: {
-                    agentOptions: {
-                        keepAlive: true,
-                        family: 4
-                    },
-                    url: 'https://api.telegram.org'
-                }
+                polling: true,
+                onlyFirstMatch: true
             });
             
             this.commands = new TelegramCommands(this);
@@ -75,6 +61,7 @@ class TelegramBridge {
             await this.setupTelegramHandlers();
             await this.loadMappingsFromDb();
             
+            // Wait for WhatsApp to be ready before syncing
             if (this.whatsappBot?.sock?.user) {
                 await this.syncContacts();
                 await this.updateTopicNames();
@@ -343,23 +330,7 @@ class TelegramBridge {
     }
 
     async setupTelegramHandlers() {
-        this.telegramBot.on('polling_error', (error) => {
-            this.pollingRetries++;
-            logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
-            
-            if (this.pollingRetries >= this.maxPollingRetries) {
-                logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
-                this.restartTelegramBot();
-            }
-        });
-
-        this.telegramBot.on('error', (error) => {
-            logger.error('Telegram bot error:', error);
-        });
-
         this.telegramBot.on('message', this.wrapHandler(async (msg) => {
-            this.pollingRetries = 0;
-            
             if (msg.chat.type === 'private') {
                 this.botChatId = msg.chat.id;
                 await this.commands.handleCommand(msg);
@@ -368,46 +339,15 @@ class TelegramBridge {
             }
         }));
 
-        logger.info('📱 Telegram message handlers set up');
-    }
+        this.telegramBot.on('polling_error', (error) => {
+            logger.error('Telegram polling error:', error);
+        });
 
-    async restartTelegramBot() {
-        try {
-            logger.info('🔄 Restarting Telegram bot...');
-            
-            if (this.telegramBot) {
-                await this.telegramBot.stopPolling();
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            
-            const token = config.get('telegram.botToken');
-            this.telegramBot = new TelegramBot(token, { 
-                polling: {
-                    interval: 1000,
-                    autoStart: true,
-                    params: {
-                        timeout: 10,
-                        allowed_updates: ['message', 'callback_query']
-                    }
-                },
-                onlyFirstMatch: true,
-                request: {
-                    agentOptions: {
-                        keepAlive: true,
-                        family: 4
-                    },
-                    url: 'https://api.telegram.org'
-                }
-            });
-            
-            await this.setupTelegramHandlers();
-            this.pollingRetries = 0;
-            
-            logger.info('✅ Telegram bot restarted successfully');
-        } catch (error) {
-            logger.error('❌ Failed to restart Telegram bot:', error);
-        }
+        this.telegramBot.on('error', (error) => {
+            logger.error('Telegram bot error:', error);
+        });
+
+        logger.info('📱 Telegram message handlers set up');
     }
 
     wrapHandler(handler) {
