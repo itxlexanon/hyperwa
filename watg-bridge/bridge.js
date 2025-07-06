@@ -901,45 +901,45 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
     }
 
     // New function to handle profile picture updates
-async updateProfilePicture(topicId, jid) {
-    try {
-        if (!config.get('telegram.features.profilePicSync')) {
-            logger.debug(`Profile picture sync disabled for ${jid}`);
-            return;
-        }
-
-        // Verify topic exists
-        const topicExists = await this.verifyTopicExists(topicId);
-        if (!topicExists) {
-            logger.warn(`⚠️ Topic ${topicId} for ${jid} does not exist, skipping profile picture update`);
-            return;
-        }
-
-        let profilePicUrl;
+    async updateProfilePicture(topicId, jid) {
         try {
-            profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
-            logger.debug(`📸 Fetched profile picture URL for ${jid}: ${profilePicUrl}`);
+            if (!config.get('telegram.features.profilePicSync')) {
+                logger.debug(`Profile picture sync disabled for ${jid}`);
+                return;
+            }
+
+            // Verify topic exists
+            const topicExists = await this.verifyTopicExists(topicId);
+            if (!topicExists) {
+                logger.warn(`⚠️ Topic ${topicId} for ${jid} does not exist, skipping profile picture update`);
+                return;
+            }
+
+            let profilePicUrl;
+            try {
+                profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(jid, 'image');
+                logger.debug(`📸 Fetched profile picture URL for ${jid}: ${profilePicUrl}`);
+            } catch (error) {
+                logger.debug(`📸 No profile picture available for ${jid}:`, error);
+                return;
+            }
+
+            if (!profilePicUrl) {
+                logger.debug(`📸 No profile picture URL for ${jid}`);
+                return;
+            }
+
+            await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
+                message_thread_id: topicId,
+                caption: '📸 Profile picture updated'
+            });
+
+            logger.info(`📸 Sent updated profile picture for ${jid} to topic ${topicId}`);
         } catch (error) {
-            logger.debug(`📸 No profile picture available for ${jid}:`, error);
-            return;
+            logger.error(`❌ Failed to update profile picture for ${jid} to topic ${topicId}:`, error);
         }
-
-        if (!profilePicUrl) {
-            logger.debug(`📸 No profile picture URL for ${jid}`);
-            return;
-        }
-
-        // Send updated profile picture
-        await this.telegramBot.sendPhoto(config.get('telegram.chatId'), profilePicUrl, {
-            message_thread_id: topicId,
-            caption: '📸 Profile picture updated'
-        });
-
-        logger.info(`📸 Sent updated profile picture for ${jid} to topic ${topicId}`);
-    } catch (error) {
-        logger.error(`❌ Failed to update profile picture for ${jid} to topic ${topicId}:`, error);
     }
-}
+
 
     async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
         try {
@@ -1790,89 +1790,88 @@ async updateProfilePicture(topicId, jid) {
         await this.recreateMissingTopics();
     }
 
-async setupWhatsAppHandlers() {
-    if (!this.whatsappBot?.sock) {
-        logger.warn('⚠️ WhatsApp socket not available for setting up handlers');
-        return;
-    }
+    async setupWhatsAppHandlers() {
+        if (!this.whatsappBot?.sock) {
+            logger.warn('⚠️ WhatsApp socket not available for setting up handlers');
+            return;
+        }
 
-    this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
-        try {
-            logger.debug(`📞 Received contacts.update event for ${contacts.length} contacts`);
-            let updatedCount = 0;
-            for (const contact of contacts) {
-                if (contact.id && contact.name && contact.id !== 'status@broadcast' && !contact.name.startsWith('+') && contact.name.length > 2) {
-                    const phone = contact.id.split('@')[0];
-                    const oldName = this.contactMappings.get(phone);
+        this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
+            try {
+                logger.debug(`📞 Received contacts.update event for ${contacts.length} contacts`);
+                let updatedCount = 0;
+                for (const contact of contacts) {
+                    if (contact.id && contact.name && contact.id !== 'status@broadcast' && !contact.name.startsWith('+') && contact.name.length > 2) {
+                        const phone = contact.id.split('@')[0];
+                        const oldName = this.contactMappings.get(phone);
 
-                    if (oldName !== contact.name) {
-                        await this.saveContactMapping(phone, contact.name);
-                        logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
-                        updatedCount++;
+                        if (oldName !== contact.name) {
+                            await this.saveContactMapping(phone, contact.name);
+                            logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
+                            updatedCount++;
+
+                            if (this.chatMappings.has(contact.id)) {
+                                const topicId = this.chatMappings.get(contact.id);
+                                try {
+                                    await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                        name: contact.name
+                                    });
+                                    logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
+                                } catch (error) {
+                                    logger.error(`❌ Could not update topic name for ${phone}:`, error);
+                                }
+                            }
+                        }
 
                         if (this.chatMappings.has(contact.id)) {
                             const topicId = this.chatMappings.get(contact.id);
-                            try {
-                                await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
-                                    name: contact.name
-                                });
-                                logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
-                            } catch (error) {
-                                logger.error(`❌ Could not update topic name for ${phone}:`, error);
-                            }
+                            logger.debug(`📸 Attempting profile picture update for ${contact.id} to topic ${topicId}`);
+                            await this.updateProfilePicture(topicId, contact.id);
                         }
                     }
+                }
+                if (updatedCount > 0) {
+                    logger.info(`✅ Processed ${updatedCount} contact updates`);
+                } else {
+                    logger.debug('📞 No valid contact updates to process');
+                }
+            } catch (error) {
+                logger.error('❌ Failed to process contact updates:', error);
+            }
+        });
 
-                    // Send profile picture update if contact has a mapped topic
-                    if (this.chatMappings.has(contact.id)) {
-                        const topicId = this.chatMappings.get(contact.id);
-                        logger.debug(`📸 Attempting profile picture update for ${contact.id} to topic ${topicId}`);
-                        await this.updateProfilePicture(topicId, contact.id);
+        this.whatsappBot.sock.ev.on('contacts.upsert', async (contacts) => {
+            try {
+                let newCount = 0;
+                for (const contact of contacts) {
+                    if (contact.id && contact.name) {
+                        const phone = contact.id.split('@')[0];
+                        if (contact.name !== phone && 
+                            !contact.name.startsWith('+') && 
+                            contact.name.length > 2 &&
+                            !this.contactMappings.has(phone)) {
+                            await this.saveContactMapping(phone, contact.name);
+                            logger.info(`📞 New contact: ${phone} -> ${contact.name}`);
+                            newCount++;
+                        }
                     }
                 }
-            }
-            if (updatedCount > 0) {
-                logger.info(`✅ Processed ${updatedCount} contact updates`);
-            } else {
-                logger.debug('📞 No valid contact updates to process');
-            }
-        } catch (error) {
-            logger.error('❌ Failed to process contact updates:', error);
-        }
-    });
-
-    this.whatsappBot.sock.ev.on('contacts.upsert', async (contacts) => {
-        try {
-            let newCount = 0;
-            for (const contact of contacts) {
-                if (contact.id && contact.name) {
-                    const phone = contact.id.split('@')[0];
-                    if (contact.name !== phone && 
-                        !contact.name.startsWith('+') && 
-                        contact.name.length > 2 &&
-                        !this.contactMappings.has(phone)) {
-                        await this.saveContactMapping(phone, contact.name);
-                        logger.info(`📞 New contact: ${phone} -> ${contact.name}`);
-                        newCount++;
-                    }
+                if (newCount > 0) {
+                    logger.info(`✅ Added ${newCount} new contacts`);
                 }
+            } catch (error) {
+                logger.error('❌ Failed to process new contacts:', error);
             }
-            if (newCount > 0) {
-                logger.info(`✅ Added ${newCount} new contacts`);
+        });
+
+        this.whatsappBot.sock.ev.on('call', async (callEvents) => {
+            for (const callEvent of callEvents) {
+                await this.handleCallNotification(callEvent);
             }
-        } catch (error) {
-            logger.error('❌ Failed to process new contacts:', error);
-        }
-    });
+        });
 
-    this.whatsappBot.sock.ev.on('call', async (callEvents) => {
-        for (const callEvent of callEvents) {
-            await this.handleCallNotification(callEvent);
-        }
-    });
-
-    logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
-}
+        logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
+    }
     
     async shutdown() {
         logger.info('🛑 Shutting down Telegram bridge...');
