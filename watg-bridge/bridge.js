@@ -950,11 +950,11 @@ async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
             try {
                 const groupMeta = await this.whatsappBot.sock.groupMetadata(jid);
                 welcomeText = `🏷️ **Group Information**\n\n` +
-                              `📝 **Name:** ${groupMeta.subject}\n` +
-                              `👥 **Participants:** ${groupMeta.participants.length}\n` +
-                              `🆔 **Group ID:** \`${jid}\`\n` +
-                              `📅 **Created:** ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
-                              `💬 Messages from this group will appear here`;
+                             `📝 **Name:** ${groupMeta.subject}\n` +
+                             `👥 **Participants:** ${groupMeta.participants.length}\n` +
+                             `🆔 **Group ID:** \`${jid}\`\n` +
+                             `📅 **Created:** ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
+                             `💬 Messages from this group will appear here`;
             } catch (error) {
                 welcomeText = `🏷️ **Group Chat**\n\n💬 Messages from this group will appear here`;
                 logger.debug(`Could not fetch group metadata for ${jid}:`, error);
@@ -972,13 +972,13 @@ async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
             }
 
             welcomeText = `👤 **Contact Information**\n\n` +
-                          `📝 **Name:** ${contactName}\n` +
-                          `📱 **Phone:** +${phone}\n` +
-                          `🖐️ **Handle:** ${handleName}\n` +
-                          userStatus +
-                          `🆔 **WhatsApp ID:** \`${jid}\`\n` +
-                          `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
-                          `💬 Messages with this contact will appear here`;
+                         `📝 **Name:** ${contactName}\n` +
+                         `📱 **Phone:** +${phone}\n` +
+                         `🖐️ **Handle:** ${handleName}\n` +
+                         userStatus +
+                         `🆔 **WhatsApp ID:** \`${jid}\`\n` +
+                         `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
+                         `💬 Messages with this contact will appear here`;
         }
 
         const sentMessage = await this.telegramBot.sendMessage(chatId, welcomeText, {
@@ -988,17 +988,19 @@ async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
 
         await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id);
         
-        // --- CHANGE START ---
-        // Call sendProfilePicture directly without a delay
-        await this.sendProfilePicture(topicId, jid, false);
-        // --- CHANGE END ---
+        // FIXED: Add delay before sending profile picture
+        setTimeout(async () => {
+            await this.sendProfilePicture(topicId, jid, false);
+        }, 2000);
 
     } catch (error) {
         logger.error('❌ Failed to send welcome message:', error);
     }
 }
 
-    // FIXED: Profile picture sync
+    // FIXED: Profile picture sync
+
+
 
 async sendProfilePicture(topicId, jid, isUpdate = false) {
     try {
