@@ -939,59 +939,55 @@ async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg) {
     try {
         const chatId = config.get('telegram.chatId');
         const phone = jid.split('@')[0];
-
         const contactName = this.contactMappings.get(phone) || 'Not available';
-        const contactPhone = `+${phone}`;
-
         const participant = whatsappMsg.key.participant || jid;
         const userInfo = this.userMappings.get(participant);
         const handleName = whatsappMsg.pushName || userInfo?.name || 'Unknown';
-
-        // Send profile picture first
-        await this.sendProfilePicture(topicId, jid, false);
-
-        let userStatus = '';
-        try {
-            const status = await this.whatsappBot.sock.fetchStatus(jid);
-            if (status?.status) {
-                userStatus = `💭 **Bio:** ${status.status}\n`;
-            }
-        } catch (error) {
-            logger.debug(`Could not fetch status for ${jid}:`, error);
-        }
 
         let welcomeText = '';
 
         if (isGroup) {
             try {
                 const groupMeta = await this.whatsappBot.sock.groupMetadata(jid);
-                welcomeText = `🏷️ **Group Information**\n\n` +
-                              `📝 **Name:** ${groupMeta.subject}\n` +
-                              `👥 **Participants:** ${groupMeta.participants.length}\n` +
-                              `🆔 **Group ID:** \`${jid}\`\n` +
-                              `📅 **Created:** ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
-                              `💬 Messages from this group will appear here`;
-            } catch (error) {
-                welcomeText = `🏷️ **Group Chat**\n\n💬 Messages from this group will appear here`;
-                logger.debug(`Could not fetch group metadata for ${jid}:`, error);
+                welcomeText = `🏷️ *Group Information*\n\n` +
+                              `📝 *Name:* ${groupMeta.subject}\n` +
+                              `👥 *Participants:* ${groupMeta.participants.length}\n` +
+                              `🆔 *Group ID:* \`${jid}\`\n` +
+                              `📅 *Created:* ${new Date(groupMeta.creation * 1000).toLocaleDateString()}\n\n` +
+                              `💬 Messages from this group will appear here.`;
+            } catch {
+                welcomeText = `🏷️ *Group Chat*\n\n💬 Messages from this group will appear here.`;
             }
         } else {
-            welcomeText = `👤 **Contact Information**\n\n` +
-                          `📝 **Name:** ${contactName}\n` +
-                          `📱 **Phone:** ${contactPhone}\n` +
-                          `🖐️ **Handle:** ${handleName}\n` +
+            let userStatus = '';
+            try {
+                const status = await this.whatsappBot.sock.fetchStatus(jid);
+                if (status?.status) {
+                    userStatus = `💭 *Bio:* ${status.status}\n`;
+                }
+            } catch {}
+
+            welcomeText = `👤 *Contact Information*\n\n` +
+                          `📝 *Name:* ${contactName}\n` +
+                          `📱 *Phone:* +${phone}\n` +
+                          `🖐️ *Handle:* ${handleName}\n` +
                           userStatus +
-                          `🆔 **WhatsApp ID:** \`${jid}\`\n` +
-                          `📅 **First Contact:** ${new Date().toLocaleDateString()}\n\n` +
-                          `💬 Messages with this contact will appear here`;
+                          `🆔 *WhatsApp ID:* \`${jid}\`\n` +
+                          `📅 *First Contact:* ${new Date().toLocaleDateString()}\n\n` +
+                          `💬 Messages with this contact will appear here.`;
         }
 
+        // Step 1: Send welcome message (and pin it)
         const sentMessage = await this.telegramBot.sendMessage(chatId, welcomeText, {
             message_thread_id: topicId,
-            parse_mode: 'Markdown'
+            parse_mode: 'Markdown',
+            disable_notification: true  // Do not send notification to group
         });
 
-        await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id);
+        await this.telegramBot.pinChatMessage(chatId, sentMessage.message_id, { disable_notification: true });
+
+        // Step 2: Send profile picture (after welcome message)
+        await this.sendProfilePicture(topicId, jid, false);
 
     } catch (error) {
         logger.error('❌ Failed to send welcome message:', error);
