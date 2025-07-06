@@ -916,13 +916,6 @@ async recreateMissingTopics() {
                 return;
             }
 
-            // Skip if topic was recently created to avoid duplicate sends
-            const lastCreated = this.lastTopicCreation.get(jid);
-            if (lastCreated && Date.now() - lastCreated < 60000) { // 1 minute threshold
-                logger.debug(`📸 Skipping profile picture update for ${jid}: Topic recently created`);
-                return;
-            }
-
             // Verify topic exists
             const topicExists = await this.verifyTopicExists(topicId);
             if (!topicExists) {
@@ -951,7 +944,7 @@ async recreateMissingTopics() {
 
             logger.info(`📸 Sent updated profile picture for ${jid} to topic ${topicId}`);
         } catch (error) {
-            logger.error(`❌ Failed to update profile picture for ${jid} to topic ${topicId}:`, error);
+            logger.error(`❌ Failed to update profile picture for ${jid} to topic ${topicId}:`, error, error.stack);
         }
     }
 
@@ -1835,13 +1828,27 @@ async recreateMissingTopics() {
                             }
                         }
 
-                        // Handle profile picture updates (check for imgUrl or similar)
-                        if (this.chatMappings.has(contact.id) && contact.imgUrl) {
+                        // Handle profile picture updates
+                        if (this.chatMappings.has(contact.id)) {
                             const topicId = this.chatMappings.get(contact.id);
-                            logger.debug(`📸 Detected profile picture change for ${contact.id} to topic ${topicId}`);
-                            await this.updateProfilePicture(topicId, contact.id);
-                        } else {
-                            logger.debug(`📸 No profile picture change for ${contact.id}`);
+                            let shouldUpdatePicture = false;
+                            try {
+                                // Check if profile picture has changed by attempting to fetch it
+                                const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(contact.id, 'image');
+                                if (profilePicUrl) {
+                                    shouldUpdatePicture = true;
+                                    logger.debug(`📸 Profile picture available for ${contact.id}: ${profilePicUrl}`);
+                                }
+                            } catch (error) {
+                                logger.debug(`📸 No profile picture update for ${contact.id}:`, error);
+                            }
+
+                            if (shouldUpdatePicture) {
+                                logger.debug(`📸 Triggering profile picture update for ${contact.id} to topic ${topicId}`);
+                                await this.updateProfilePicture(topicId, contact.id);
+                            } else {
+                                logger.debug(`📸 No profile picture change detected for ${contact.id}`);
+                            }
                         }
                     }
                 }
@@ -1887,6 +1894,7 @@ async recreateMissingTopics() {
 
         logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
     }
+
 
     
     async shutdown() {
