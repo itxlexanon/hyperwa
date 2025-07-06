@@ -329,58 +329,36 @@ class TelegramBridge {
         }
     }
 
-async setupTelegramHandlers() {
-    this.telegramBot.on('polling_error', (error) => {
-        this.pollingRetries++;
-        logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
-
-        if (this.pollingRetries >= this.maxPollingRetries) {
-            logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
-            this.restartTelegramBot();
-        }
-    });
-
-    this.telegramBot.on('error', (error) => {
-        logger.error('Telegram bot error:', error);
-    });
-
-    // ✅ Handle user messages
-    this.telegramBot.on('message', this.wrapHandler(async (msg) => {
-        this.pollingRetries = 0;
-
-        if (msg.chat.type === 'private') {
-            this.botChatId = msg.chat.id;
-            await this.commands.handleCommand(msg);
-        } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
-            await this.handleTelegramMessage(msg);
-        }
-    }));
-
-    // ✅ Handle inline button clicks (pagination etc.)
-    this.telegramBot.on('callback_query', this.wrapHandler(async (query) => {
-        const chatId = query.message.chat.id;
-        const messageId = query.message.message_id;
-        const data = query.data;
-
-        // Handle contact pagination
-        if (data.startsWith('contacts_page_')) {
-            const page = parseInt(data.split('_')[2], 10);
-
-            // Optional: delete old message before showing new page
-            try {
-                await this.telegramBot.deleteMessage(chatId, messageId);
-            } catch (err) {
-                logger.debug(`⚠️ Could not delete message ${messageId}:`, err.message);
+    async setupTelegramHandlers() {
+        this.telegramBot.on('message', this.wrapHandler(async (msg) => {
+            if (msg.chat.type === 'private') {
+                this.botChatId = msg.chat.id;
+                await this.commands.handleCommand(msg);
+            } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
+                await this.handleTelegramMessage(msg);
             }
+        }));
 
-            await this.commands.handleContacts(chatId, page);
-            await this.telegramBot.answerCallbackQuery(query.id);
-        }
-    }));
+        this.telegramBot.on('polling_error', (error) => {
+            logger.error('Telegram polling error:', error);
+        });
 
-    logger.info('📱 Telegram message handlers set up');
-}
+        this.telegramBot.on('error', (error) => {
+            logger.error('Telegram bot error:', error);
+        });
 
+        logger.info('📱 Telegram message handlers set up');
+    }
+
+    wrapHandler(handler) {
+        return async (...args) => {
+            try {
+                await handler(...args);
+            } catch (error) {
+                logger.error('❌ Unhandled error in Telegram handler:', error);
+            }
+        };
+    }
 
     async logToTelegram(title, message) {
         if (!this.telegramBot) return;
