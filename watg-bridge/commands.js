@@ -107,45 +107,6 @@ class TelegramCommands {
         }
     }
 
-async handleContacts(chatId, page = 1) {
-    try {
-        const contacts = [...this.bridge.contactMappings.entries()];
-        const pageSize = 50;
-        const totalPages = Math.ceil(contacts.length / pageSize);
-
-        if (contacts.length === 0) {
-            return this.bridge.telegramBot.sendMessage(chatId, '📞 No contacts found.', {
-                parse_mode: 'Markdown'
-            });
-        }
-
-        // Clamp page to valid range
-        page = Math.max(1, Math.min(page, totalPages));
-        const start = (page - 1) * pageSize;
-        const end = start + pageSize;
-
-        const currentContacts = contacts.slice(start, end);
-        const contactText = currentContacts
-            .map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`)
-            .join('\n');
-
-        const navigationButtons = [];
-        if (page > 1) navigationButtons.push({ text: '⬅️ Previous', callback_data: `contacts_page_${page - 1}` });
-        if (page < totalPages) navigationButtons.push({ text: '➡️ Next', callback_data: `contacts_page_${page + 1}` });
-
-        await this.bridge.telegramBot.sendMessage(chatId,
-            `📞 *Contacts (Page ${page}/${totalPages})*\n\n${contactText}`, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [navigationButtons]
-            }
-        });
-    } catch (error) {
-        logger.error('❌ Failed to list contacts:', error);
-        await this.bridge.telegramBot.sendMessage(chatId, `❌ Error: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
 
     async handleSearchContact(chatId, args) {
         if (args.length === 0) {
@@ -176,7 +137,6 @@ async handleContacts(chatId, page = 1) {
             `/status - Show bridge status\n` +
             `/send <number> <msg> - Send WhatsApp message\n` +
             `/sync - Sync WhatsApp contacts\n` +
-            `/contacts - View WhatsApp contacts\n` +
             `/searchcontact <name/phone> - Search contacts`;
         await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
@@ -188,7 +148,6 @@ async handleContacts(chatId, page = 1) {
                 { command: 'status', description: 'Show bridge status' },
                 { command: 'send', description: 'Send WhatsApp message' },
                 { command: 'sync', description: 'Sync WhatsApp contacts' },
-                { command: 'contacts', description: 'View WhatsApp contacts' },
                 { command: 'searchcontact', description: 'Search WhatsApp contacts' }
             ]);
             logger.info('✅ Telegram bot commands registered');
