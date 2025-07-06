@@ -329,36 +329,58 @@ class TelegramBridge {
         }
     }
 
-    async setupTelegramHandlers() {
-        this.telegramBot.on('message', this.wrapHandler(async (msg) => {
-            if (msg.chat.type === 'private') {
-                this.botChatId = msg.chat.id;
-                await this.commands.handleCommand(msg);
-            } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
-                await this.handleTelegramMessage(msg);
-            }
-        }));
+async setupTelegramHandlers() {
+    this.telegramBot.on('polling_error', (error) => {
+        this.pollingRetries++;
+        logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
 
-        this.telegramBot.on('polling_error', (error) => {
-            logger.error('Telegram polling error:', error);
-        });
+        if (this.pollingRetries >= this.maxPollingRetries) {
+            logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
+            this.restartTelegramBot();
+        }
+    });
 
-        this.telegramBot.on('error', (error) => {
-            logger.error('Telegram bot error:', error);
-        });
+    this.telegramBot.on('error', (error) => {
+        logger.error('Telegram bot error:', error);
+    });
 
-        logger.info('📱 Telegram message handlers set up');
-    }
+    // ✅ Handle user messages
+    this.telegramBot.on('message', this.wrapHandler(async (msg) => {
+        this.pollingRetries = 0;
 
-    wrapHandler(handler) {
-        return async (...args) => {
+        if (msg.chat.type === 'private') {
+            this.botChatId = msg.chat.id;
+            await this.commands.handleCommand(msg);
+        } else if (msg.chat.type === 'supergroup' && msg.is_topic_message) {
+            await this.handleTelegramMessage(msg);
+        }
+    }));
+
+    // ✅ Handle inline button clicks (pagination etc.)
+    this.telegramBot.on('callback_query', this.wrapHandler(async (query) => {
+        const chatId = query.message.chat.id;
+        const messageId = query.message.message_id;
+        const data = query.data;
+
+        // Handle contact pagination
+        if (data.startsWith('contacts_page_')) {
+            const page = parseInt(data.split('_')[2], 10);
+
+            // Optional: delete old message before showing new page
             try {
-                await handler(...args);
-            } catch (error) {
-                logger.error('❌ Unhandled error in Telegram handler:', error);
+                await this.telegramBot.deleteMessage(chatId, messageId);
+            } catch (err) {
+                logger.debug(`⚠️ Could not delete message ${messageId}:`, err.message);
             }
-        };
-    }
+
+            await this.commands.handleContacts(chatId, page);
+            await this.telegramBot.answerCallbackQuery(query.id);
+        }
+    }));
+
+    logger.info('📱 Telegram message handlers set up');
+}
+
 
     async logToTelegram(title, message) {
         if (!this.telegramBot) return;
@@ -380,77 +402,86 @@ class TelegramBridge {
         }
     }
 
-    async sendQRCode(qrCode) {
-        try {
-            if (!this.telegramBot) return;
+async sendQRCode(qrCode) {
+    try {
+        if (!this.telegramBot) return;
 
-            const qrcode = require('qrcode');
-            const qrBuffer = await qrcode.toBuffer(qrCode, { 
-                type: 'png', 
-                width: 512,
-                margin: 2 
+        const qrcode = require('qrcode');
+        const qrBuffer = await qrcode.toBuffer(qrCode, {
+            type: 'png',
+            width: 512,
+            margin: 2
+        });
+
+        const chatId = config.get('telegram.chatId');        // bot's main chat
+        const logChannel = config.get('telegram.logChannel'); // configured log channel
+
+        const caption = '📱 *Scan QR Code to Login to WhatsApp*\n\nScan this QR code with your WhatsApp mobile app to connect.';
+
+        // ✅ Send to main bot chat (your own chat with the bot)
+        if (chatId && !chatId.includes('YOUR_CHAT_ID')) {
+            await this.telegramBot.sendPhoto(chatId, qrBuffer, {
+                caption,
+                parse_mode: 'Markdown'
             });
-
-            const ownerId = config.get('telegram.ownerId') || config.get('telegram.chatId');
-            const logChannel = config.get('telegram.logChannel');
-
-            if (ownerId) {
-                await this.telegramBot.sendPhoto(ownerId, qrBuffer, {
-                    caption: '📱 *Scan QR Code to Login to WhatsApp*\n\nScan this QR code with your WhatsApp mobile app to connect.',
-                    parse_mode: 'Markdown'
-                });
-            }
-
-            if (logChannel && logChannel !== ownerId) {
-                await this.telegramBot.sendPhoto(logChannel, qrBuffer, {
-                    caption: '📱 *WhatsApp QR Code Generated*\n\nWaiting for scan...',
-                    parse_mode: 'Markdown'
-                });
-            }
-
-            logger.info('📱 QR code sent to Telegram');
-            
-            setTimeout(async () => {
-                await this.syncContacts();
-            }, 10000);
-            
-        } catch (error) {
-            logger.error('❌ Failed to send QR code to Telegram:', error);
         }
-    }
 
-    async sendStartMessage() {
-        try {
-            if (!this.telegramBot) return;
-
-            const startMessage = `🚀 *HyperWa Bot Started Successfully!*\n\n` +
-                               `✅ WhatsApp: Connected\n` +
-                               `✅ Telegram Bridge: Active\n` +
-                               `📞 Contacts: ${this.contactMappings.size} synced\n` +
-                               `💬 Chats: ${this.chatMappings.size} mapped\n` +
-                               `🔗 Ready to bridge messages!\n\n` +
-                               `⏰ Started at: ${new Date().toLocaleString()}`;
-
-            const ownerId = config.get('telegram.ownerId') || config.get('telegram.chatId');
-            const logChannel = config.get('telegram.logChannel');
-
-            if (ownerId) {
-                await this.telegramBot.sendMessage(ownerId, startMessage, {
-                    parse_mode: 'Markdown'
-                });
-            }
-
-            if (logChannel && logChannel !== ownerId) {
-                await this.telegramBot.sendMessage(logChannel, startMessage, {
-                    parse_mode: 'Markdown'
-                });
-            }
-
-            logger.info('🚀 Start message sent to Telegram');
-        } catch (error) {
-            logger.error('❌ Failed to send start message to Telegram:', error);
+        // ✅ Also send to log channel if set
+        if (logChannel && !logChannel.includes('YOUR_LOG_CHANNEL')) {
+            await this.telegramBot.sendPhoto(logChannel, qrBuffer, {
+                caption: '📱 *WhatsApp QR Code Generated*\n\nWaiting for scan...',
+                parse_mode: 'Markdown'
+            });
         }
+
+        logger.info('📱 QR code sent to bot chat and log channel');
+
+        // Optional: Sync contacts after scan window
+        setTimeout(async () => {
+            await this.syncContacts();
+        }, 10000);
+
+    } catch (error) {
+        logger.error('❌ Failed to send QR code to Telegram:', error);
     }
+}
+
+
+async sendStartMessage() {
+    try {
+        if (!this.telegramBot) return;
+
+        const chatId = config.get('telegram.chatId');
+        const logChannel = config.get('telegram.logChannel');
+
+        const startMessage = `🚀 *HyperWa Bridge Started Successfully!*\n\n` +
+                             `✅ WhatsApp: Connected\n` +
+                             `✅ Telegram Bridge: Active\n` +
+                             `📞 Contacts: ${this.contactMappings.size} synced\n` +
+                             `💬 Chats: ${this.chatMappings.size} mapped\n` +
+                             `🔗 Ready to bridge messages!\n\n` +
+                             `⏰ Started at: ${new Date().toLocaleString()}`;
+
+        // ✅ Send to main bot chat
+        if (chatId && !chatId.includes('YOUR_CHAT_ID')) {
+            await this.telegramBot.sendMessage(chatId, startMessage, {
+                parse_mode: 'Markdown'
+            });
+        }
+
+        // ✅ Send to log channel if configured
+        if (logChannel && !logChannel.includes('YOUR_LOG_CHANNEL')) {
+            await this.telegramBot.sendMessage(logChannel, startMessage, {
+                parse_mode: 'Markdown'
+            });
+        }
+
+        logger.info('🚀 Start message sent to Telegram bot and log channel');
+    } catch (error) {
+        logger.error('❌ Failed to send start message to Telegram:', error);
+    }
+}
+
 
     async sendPresence(jid, presenceType = 'available') {
         try {
