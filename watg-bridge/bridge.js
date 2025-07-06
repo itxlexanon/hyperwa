@@ -916,6 +916,13 @@ async recreateMissingTopics() {
                 return;
             }
 
+            // Skip if topic was recently created to avoid duplicate sends
+            const lastCreated = this.lastTopicCreation.get(jid);
+            if (lastCreated && Date.now() - lastCreated < 60000) { // 1 minute threshold
+                logger.debug(`📸 Skipping profile picture update for ${jid}: Topic recently created`);
+                return;
+            }
+
             // Verify topic exists
             const topicExists = await this.verifyTopicExists(topicId);
             if (!topicExists) {
@@ -1806,6 +1813,7 @@ async recreateMissingTopics() {
                     if (contact.id && contact.id !== 'status@broadcast') {
                         const phone = contact.id.split('@')[0];
 
+                        // Handle name updates
                         if (contact.name && !contact.name.startsWith('+') && contact.name !== phone && contact.name.length > 2) {
                             const oldName = this.contactMappings.get(phone);
                             if (oldName !== contact.name) {
@@ -1827,10 +1835,13 @@ async recreateMissingTopics() {
                             }
                         }
 
-                        if (this.chatMappings.has(contact.id)) {
+                        // Handle profile picture updates (check for imgUrl or similar)
+                        if (this.chatMappings.has(contact.id) && contact.imgUrl) {
                             const topicId = this.chatMappings.get(contact.id);
-                            logger.debug(`📸 Attempting profile picture update for ${contact.id} to topic ${topicId}`);
+                            logger.debug(`📸 Detected profile picture change for ${contact.id} to topic ${topicId}`);
                             await this.updateProfilePicture(topicId, contact.id);
+                        } else {
+                            logger.debug(`📸 No profile picture change for ${contact.id}`);
                         }
                     }
                 }
