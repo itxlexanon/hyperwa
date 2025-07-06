@@ -52,24 +52,9 @@ class TelegramBridge {
             await this.initializeDatabase();
             await fs.ensureDir(this.tempDir);
             
-            // Enhanced Telegram bot initialization with better error handling
             this.telegramBot = new TelegramBot(token, { 
-                polling: {
-                    interval: 1000,
-                    autoStart: true,
-                    params: {
-                        timeout: 10,
-                        allowed_updates: ['message', 'callback_query']
-                    }
-                },
-                onlyFirstMatch: true,
-                request: {
-                    agentOptions: {
-                        keepAlive: true,
-                        family: 4
-                    },
-                    url: 'https://api.telegram.org'
-                }
+                polling: true,
+                onlyFirstMatch: true
             });
             
             this.commands = new TelegramCommands(this);
@@ -77,6 +62,7 @@ class TelegramBridge {
             await this.setupTelegramHandlers();
             await this.loadMappingsFromDb();
             
+            // Wait for WhatsApp to be ready before syncing
             if (this.whatsappBot?.sock?.user) {
                 await this.syncContacts();
                 await this.updateTopicNames();
@@ -87,6 +73,7 @@ class TelegramBridge {
             logger.error('❌ Failed to initialize Telegram bridge:', error);
         }
     }
+
 
     async initializeDatabase() {
         try {
@@ -206,6 +193,7 @@ class TelegramBridge {
         }
     }
 
+    // FIXED: Proper contact sync that gets real contact names, not handle names
     async syncContacts() {
         try {
             if (!this.whatsappBot?.sock?.user) {
@@ -230,15 +218,15 @@ class TelegramBridge {
                 let contactName = null;
                 
                 // Extract name from contact 
-                if (contact.name && contact.name !== phone && !contact.name.startsWith('+')) {
+                if (contact.name) {
                     contactName = contact.name;
-                } else if (contact.notify && contact.notify !== phone && !contact.notify.startsWith('+')) {
+                } else if (contact.notify) {
                     contactName = contact.notify;
-                } else if (contact.verifiedName && contact.verifiedName !== phone) {
+                } else if (contact.verifiedName) {
                     contactName = contact.verifiedName;
                 }
                 
-                if (contactName && contactName.length > 2) {
+                if (contactName && contactName !== phone) {
                     const existingName = this.contactMappings.get(phone);
                     if (existingName !== contactName) {
                         await this.saveContactMapping(phone, contactName);
@@ -249,14 +237,11 @@ class TelegramBridge {
             }
             
             logger.info(`✅ Synced ${syncedCount} new/updated contacts (Total: ${this.contactMappings.size})`);
-            
-            // Update topic names after contact sync
-            if (syncedCount > 0) {
-                await this.updateTopicNames();
-            }
+            await this.logToTelegram('✅ Contact Sync Complete', `Synced ${syncedCount} new/updated contacts. Total: ${this.contactMappings.size}`);
             
         } catch (error) {
             logger.error('❌ Failed to sync contacts:', error);
+            await this.logToTelegram('❌ Contact Sync Failed', `Error: ${error.message}`);
         }
     }
 
@@ -290,8 +275,10 @@ class TelegramBridge {
             }
             
             logger.info(`✅ Updated ${updatedCount} topic names`);
+            await this.logToTelegram('✅ Topic Names Updated', `Updated ${updatedCount} topic names.`);
         } catch (error) {
             logger.error('❌ Failed to update topic names:', error);
+            await this.logToTelegram('❌ Topic Names Update Failed', `Error: ${error.message}`);
         }
     }
 
@@ -309,25 +296,7 @@ class TelegramBridge {
     }
 
     async setupTelegramHandlers() {
-        // Enhanced error handling for Telegram polling
-        this.telegramBot.on('polling_error', (error) => {
-            this.pollingRetries++;
-            logger.error(`Telegram polling error (attempt ${this.pollingRetries}/${this.maxPollingRetries}):`, error.message);
-            
-            if (this.pollingRetries >= this.maxPollingRetries) {
-                logger.error('❌ Max polling retries reached. Restarting Telegram bot...');
-                this.restartTelegramBot();
-            }
-        });
-
-        this.telegramBot.on('error', (error) => {
-            logger.error('Telegram bot error:', error);
-        });
-
         this.telegramBot.on('message', this.wrapHandler(async (msg) => {
-            // Reset polling retries on successful message
-            this.pollingRetries = 0;
-            
             if (msg.chat.type === 'private') {
                 this.botChatId = msg.chat.id;
                 await this.commands.handleCommand(msg);
@@ -336,47 +305,15 @@ class TelegramBridge {
             }
         }));
 
-        logger.info('📱 Telegram message handlers set up');
-    }
+        this.telegramBot.on('polling_error', (error) => {
+            logger.error('Telegram polling error:', error);
+        });
 
-    async restartTelegramBot() {
-        try {
-            logger.info('🔄 Restarting Telegram bot...');
-            
-            if (this.telegramBot) {
-                await this.telegramBot.stopPolling();
-            }
-            
-            // Wait a bit before restarting
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            
-            const token = config.get('telegram.botToken');
-            this.telegramBot = new TelegramBot(token, { 
-                polling: {
-                    interval: 1000,
-                    autoStart: true,
-                    params: {
-                        timeout: 10,
-                        allowed_updates: ['message', 'callback_query']
-                    }
-                },
-                onlyFirstMatch: true,
-                request: {
-                    agentOptions: {
-                        keepAlive: true,
-                        family: 4
-                    },
-                    url: 'https://api.telegram.org'
-                }
-            });
-            
-            await this.setupTelegramHandlers();
-            this.pollingRetries = 0;
-            
-            logger.info('✅ Telegram bot restarted successfully');
-        } catch (error) {
-            logger.error('❌ Failed to restart Telegram bot:', error);
-        }
+        this.telegramBot.on('error', (error) => {
+            logger.error('Telegram bot error:', error);
+        });
+
+        logger.info('📱 Telegram message handlers set up');
     }
 
     wrapHandler(handler) {
