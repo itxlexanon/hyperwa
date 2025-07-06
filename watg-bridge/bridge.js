@@ -1822,33 +1822,17 @@ async recreateMissingTopics() {
                                         });
                                         logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
                                     } catch (error) {
-                                        logger.error(`❌ Could not update topic name for ${phone}:`, error);
+                                        logger.error(`❌ Could not update topic name for ${phone}:`, error, error.stack);
                                     }
                                 }
                             }
                         }
 
-                        // Handle profile picture updates
+                        // Handle profile picture updates only if event suggests a change
                         if (this.chatMappings.has(contact.id)) {
                             const topicId = this.chatMappings.get(contact.id);
-                            let shouldUpdatePicture = false;
-                            try {
-                                // Check if profile picture has changed by attempting to fetch it
-                                const profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(contact.id, 'image');
-                                if (profilePicUrl) {
-                                    shouldUpdatePicture = true;
-                                    logger.debug(`📸 Profile picture available for ${contact.id}: ${profilePicUrl}`);
-                                }
-                            } catch (error) {
-                                logger.debug(`📸 No profile picture update for ${contact.id}:`, error);
-                            }
-
-                            if (shouldUpdatePicture) {
-                                logger.debug(`📸 Triggering profile picture update for ${contact.id} to topic ${topicId}`);
-                                await this.updateProfilePicture(topicId, contact.id);
-                            } else {
-                                logger.debug(`📸 No profile picture change detected for ${contact.id}`);
-                            }
+                            logger.debug(`📸 Checking profile picture for ${contact.id} to topic ${topicId}`);
+                            await this.updateProfilePicture(topicId, contact.id);
                         }
                     }
                 }
@@ -1858,7 +1842,7 @@ async recreateMissingTopics() {
                     logger.debug('📞 No valid contact updates to process');
                 }
             } catch (error) {
-                logger.error('❌ Failed to process contact updates:', error);
+                logger.error('❌ Failed to process contact updates:', error, error.stack);
             }
         });
 
@@ -1882,7 +1866,7 @@ async recreateMissingTopics() {
                     logger.info(`✅ Added ${newCount} new contacts`);
                 }
             } catch (error) {
-                logger.error('❌ Failed to process new contacts:', error);
+                logger.error('❌ Failed to process new contacts:', error, error.stack);
             }
         });
 
@@ -1894,6 +1878,7 @@ async recreateMissingTopics() {
 
         logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
     }
+
 
 
     
