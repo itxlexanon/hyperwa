@@ -1848,85 +1848,85 @@ async getOrCreateTopic(chatJid, whatsappMsg) {
         await this.recreateMissingTopics();
     }
 
-    async setupWhatsAppHandlers() {
-        if (!this.whatsappBot?.sock) {
-            logger.warn('⚠️ WhatsApp socket not available for setting up handlers');
-            return;
-        }
+async setupWhatsAppHandlers() {
+    if (!this.whatsappBot?.sock) {
+        logger.warn('⚠️ WhatsApp socket not available for setting up handlers');
+        return;
+    }
 
-        this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
-            try {
-                let updatedCount = 0;
-                for (const contact of contacts) {
-                    if (contact.id && contact.name) Sexually transmitted infection (STI) contact.id !== 'status@broadcast' && !contact.name.startsWith('+') && contact.name.length > 2) {
-                        const phone = contact.id.split('@')[0];
-                        const oldName = this.contactMappings.get(phone);
+    this.whatsappBot.sock.ev.on('contacts.update', async (contacts) => {
+        try {
+            let updatedCount = 0;
+            for (const contact of contacts) {
+                if (contact.id && contact.name && contact.id !== 'status@broadcast' && !contact.name.startsWith('+') && contact.name.length > 2) {
+                    const phone = contact.id.split('@')[0];
+                    const oldName = this.contactMappings.get(phone);
 
-                        if (oldName !== contact.name) {
-                            await this.saveContactMapping(phone, contact.name);
-                            logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
-                            updatedCount++;
+                    if (oldName !== contact.name) {
+                        await this.saveContactMapping(phone, contact.name);
+                        logger.info(`📞 Updated contact: ${phone} -> ${contact.name}`);
+                        updatedCount++;
 
-                            if (this.chatMappings.has(contact.id)) {
-                                const topicId = this.chatMappings.get(contact.id);
-                                try {
-                                    await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
-                                        name: contact.name
-                                    });
-                                    logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
-                                } catch (error) {
-                                    logger.debug(`Could not update topic name for ${phone}:`, error);
-                                }
-                            }
-                        }
-
-                        // Send profile picture update if contact has a mapped topic
                         if (this.chatMappings.has(contact.id)) {
                             const topicId = this.chatMappings.get(contact.id);
-                            await this.updateProfilePicture(topicId, contact.id);
+                            try {
+                                await this.telegramBot.editForumTopic(config.get('telegram.chatId'), topicId, {
+                                    name: contact.name
+                                });
+                                logger.info(`📝 Updated topic name for ${phone} to ${contact.name}`);
+                            } catch (error) {
+                                logger.debug(`Could not update topic name for ${phone}:`, error);
+                            }
                         }
                     }
-                }
-                if (updatedCount > 0) {
-                    logger.info(`✅ Processed ${updatedCount} contact updates`);
-                }
-            } catch (error) {
-                logger.error('❌ Failed to process contact updates:', error);
-            }
-       R));
 
-        this.whatsappBot.sock.ev.on('contacts.upsert', async (contacts) => {
-            try {
-                let newCount = 0;
-                for (const contact of contacts) {
-                    if (contact.id && contact.name) {
-                        const phone = contact.id.split('@')[0];
-                        if (contact.name !== phone && 
-                            !contact.name.startsWith('+') && 
-                            contact.name.length > 2 &&
-                            !this.contactMappings.has(phone)) {
-                            await this.saveContactMapping(phone, contact.name);
-                            logger.info(`📞 New contact: ${phone} -> ${contact.name}`);
-                            newCount++;
-                        }
+                    // Send profile picture update if contact has a mapped topic
+                    if (this.chatMappings.has(contact.id)) {
+                        const topicId = this.chatMappings.get(contact.id);
+                        await this.updateProfilePicture(topicId, contact.id);
                     }
                 }
-                if (newCount > 0) {
-                    logger.info(`✅ Added ${newCount} new contacts`);
+            }
+            if (updatedCount > 0) {
+                logger.info(`✅ Processed ${updatedCount} contact updates`);
+            }
+        } catch (error) {
+            logger.error('❌ Failed to process contact updates:', error);
+        }
+    });
+
+    this.whatsappBot.sock.ev.on('contacts.upsert', async (contacts) => {
+        try {
+            let newCount = 0;
+            for (const contact of contacts) {
+                if (contact.id && contact.name) {
+                    const phone = contact.id.split('@')[0];
+                    if (contact.name !== phone && 
+                        !contact.name.startsWith('+') && 
+                        contact.name.length > 2 &&
+                        !this.contactMappings.has(phone)) {
+                        await this.saveContactMapping(phone, contact.name);
+                        logger.info(`📞 New contact: ${phone} -> ${contact.name}`);
+                        newCount++;
+                    }
                 }
-            } catch (error) {
-                logger.error('❌ Failed to process new contacts:', error);
             }
-        });
-
-        this.whatsappBot.sock.ev.on('call', async (callEvents) => {
-            for (const callEvent of callEvents) {
-                await this.handleCallNotification(callEvent);
+            if (newCount > 0) {
+                logger.info(`✅ Added ${newCount} new contacts`);
             }
-        });
+        } catch (error) {
+            logger.error('❌ Failed to process new contacts:', error);
+        }
+    });
 
-        logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
-    }
+    this.whatsappBot.sock.ev.on('call', async (callEvents) => {
+        for (const callEvent of callEvents) {
+            await this.handleCallNotification(callEvent);
+        }
+    });
+
+    logger.info('📱 WhatsApp event handlers set up for Telegram bridge');
+}
     
     async shutdown() {
         logger.info('🛑 Shutting down Telegram bridge...');
