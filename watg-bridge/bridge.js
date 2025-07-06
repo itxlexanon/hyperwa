@@ -37,6 +37,8 @@ class TelegramBridge {
         this.topicVerificationCache = new Map();
         this.pollingRetries = 0;
         this.maxPollingRetries = 5;
+        this.topicCreationTime = new Map(); // Track when topics were created
+
     }
 
     async initialize() {
