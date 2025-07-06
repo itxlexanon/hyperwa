@@ -58,7 +58,9 @@ constructor() {
                 biDirectional: true,
                 presenceUpdates: true,
                 readReceipts: true,
-                animatedStickers: true
+                animatedStickers: true,
+                auto_contacts: true, //auto contact updates
+                auto_topics: true   ////auto update topic name
             }
         },
         logging: {
