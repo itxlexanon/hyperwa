@@ -33,7 +33,7 @@ constructor() {
               useMongoStore: true   // Set to false to use file-based auth
             },
                 uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
-                dbName: 'advancedwa'
+                dbName: 'HyperWA'
             },
             apis: {
                 ninjas: 'YOUR_API_KEY',
