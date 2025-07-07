@@ -10,6 +10,9 @@ constructor() {
             owner: '923298784489@s.whatsapp.net',
             clearAuthOnStart: false
         },
+          auth: {
+                useMongo: true, // Previously mongo.session.useMongoStore; set to false for file-based auth
+     },
         admins: [
             '923001112222',  // Just the number part, no "@s.whatsapp.net"
             '923334445555'
@@ -29,9 +32,6 @@ constructor() {
             sendPermissionError: false      // bot will send error message on comnd which are not allowed to users
         },
             mongo: {
-             session: {
-              useMongoStore: true   // Set to false to use file-based auth
-            },
                 uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
                 dbName: 'HyperWA'
             },
