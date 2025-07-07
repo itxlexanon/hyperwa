@@ -3,6 +3,7 @@ const fs = require('fs-extra');
 const logger = require('./logger');
 const config = require('../config');
 const helpers = require('../utils/helpers');
+const MessageFormatter = require('../utils/messageFormatter');
 
 class ModuleLoader {
     constructor(bot) {
@@ -150,29 +151,13 @@ class ModuleLoader {
                 
                 for (const [name, moduleInfo] of this.modules) {
                     if (moduleInfo.isSystem) {
-                        systemModules.push(name);
+                        systemModules.push({ name, commands: moduleInfo.instance.commands });
                     } else {
-                        customModules.push(name);
+                        customModules.push({ name, commands: moduleInfo.instance.commands });
                     }
                 }
 
-                let moduleText = `🔧 *Loaded Modules*\n\n`;
-                moduleText += `📊 **System Modules (${systemModules.length}):**\n`;
-                if (systemModules.length > 0) {
-                    moduleText += `• ${systemModules.join('\n• ')}\n\n`;
-                } else {
-                    moduleText += `• None loaded\n\n`;
-                }
-                
-                moduleText += `🎨 **Custom Modules (${customModules.length}):**\n`;
-                if (customModules.length > 0) {
-                    moduleText += `• ${customModules.join('\n• ')}\n\n`;
-                } else {
-                    moduleText += `• None loaded\n\n`;
-                }
-                
-                moduleText += `📈 **Total:** ${this.modules.size} modules active`;
-
+                const moduleText = MessageFormatter.moduleList(systemModules, customModules);
                 await context.bot.sendMessage(context.sender, { text: moduleText });
             }
         };
@@ -222,100 +207,80 @@ class ModuleLoader {
     setupHelpSystem() {
         const helpCommand = {
             name: 'help',
-            description: 'Show all available modules and commands or detailed help for a specific module',
-            usage: '.help [module_name]',
+            description: 'Show help menu or detailed module information',
+            usage: '.help [module/category]',
             permissions: 'public',
             execute: async (msg, params, context) => {
-                if (params.length > 0) {
-                    // Show detailed help for a specific module
-                    const moduleName = params[0].toLowerCase();
-                    const moduleInfo = this.getModule(moduleName);
-
-                    if (!moduleInfo) {
-                        await context.bot.sendMessage(context.sender, {
-                            text: `❌ Module \`${moduleName}\` not found.\n\nUse \`.help\` to see all available modules.`
-                        });
-                        return;
-                    }
-
-                    const metadata = moduleInfo.metadata || {};
-                    const commands = Array.isArray(moduleInfo.commands) ? moduleInfo.commands : [];
-                    let helpText = `📦 *Module: ${moduleName}*\n\n`;
-                    helpText += `📝 *Description*: ${metadata.description || 'No description available'}\n`;
-                    helpText += `🆚 *Version*: ${metadata.version || 'Unknown'}\n`;
-                    helpText += `👤 *Author*: ${metadata.author || 'Unknown'}\n`;
-                    helpText += `📂 *Category*: ${metadata.category || 'Uncategorized'}\n`;
-                    helpText += `📁 *Type*: ${this.modules.get(moduleName)?.isSystem ? 'System' : 'Custom'}\n\n`;
-
-                    if (commands.length > 0) {
-                        helpText += `📋 *Commands* (${commands.length}):\n`;
-                        for (const cmd of commands) {
-                            helpText += `  • \`${cmd.name}\` - ${cmd.description}\n`;
-                            helpText += `    Usage: \`${cmd.usage}\`\n`;
-                            helpText += `    Permissions: ${cmd.permissions || 'public'}\n`;
-                        }
-                    } else {
-                        helpText += `📋 *Commands*: None\n`;
-                    }
-
+                if (params.length === 0) {
+                    // Main help menu
+                    const stats = {
+                        modules: this.modules.size,
+                        commands: this.bot.messageHandler.commandHandlers.size
+                    };
+                    
+                    const helpText = MessageFormatter.helpMenu(
+                        config.get('bot.name'),
+                        config.get('bot.prefix'),
+                        stats
+                    );
+                    
                     await context.bot.sendMessage(context.sender, { text: helpText });
                     return;
                 }
 
-                // Show all modules and their commands
-                let helpText = `🤖 *${config.get('bot.name')} Help Menu*\n\n`;
-                helpText += `🎯 *Prefix*: \`${config.get('bot.prefix')}\`\n`;
-                helpText += `📊 *Total Modules*: ${this.modules.size}\n`;
-                helpText += `📋 *Total Commands*: ${this.bot.messageHandler.commandHandlers.size}\n\n`;
+                const query = params[0].toLowerCase();
 
-                const systemModules = [];
-                const customModules = [];
-
-                for (const [name, moduleInfo] of this.modules) {
-                    if (moduleInfo.isSystem) {
-                        systemModules.push({ name, instance: moduleInfo.instance });
-                    } else {
-                        customModules.push({ name, instance: moduleInfo.instance });
-                    }
+                // Check if it's a specific module
+                const moduleInfo = this.getModule(query);
+                if (moduleInfo) {
+                    const isSystem = this.modules.get(query)?.isSystem || false;
+                    const helpText = MessageFormatter.moduleHelp(
+                        query,
+                        moduleInfo.metadata || {},
+                        moduleInfo.commands || [],
+                        isSystem
+                    );
+                    
+                    await context.bot.sendMessage(context.sender, { text: helpText });
+                    return;
                 }
 
-                // System Modules
-                helpText += `📊 *System Modules* (${systemModules.length}):\n`;
-                if (systemModules.length > 0) {
-                    for (const mod of systemModules) {
-                        const commands = Array.isArray(mod.instance.commands) ? mod.instance.commands : [];
-                        helpText += `  📦 ${mod.name} (${commands.length} commands)\n`;
-                        for (const cmd of commands) {
-                            helpText += `    • \`${cmd.name}\` - ${cmd.description} (Usage: \`${cmd.usage}\`)\n`;
-                        }
-                    }
-                } else {
-                    helpText += `  • None loaded\n`;
-                }
-                helpText += `\n`;
-
-                // Custom Modules
-                helpText += `🎨 *Custom Modules* (${customModules.length}):\n`;
-                if (customModules.length > 0) {
-                    for (const mod of customModules) {
-                        const commands = Array.isArray(mod.instance.commands) ? mod.instance.commands : [];
-                        helpText += `  📦 ${mod.name} (${commands.length} commands)\n`;
-                        for (const cmd of commands) {
-                            helpText += `    • \`${cmd.name}\` - ${cmd.description} (Usage: \`${cmd.usage}\`)\n`;
-                        }
-                    }
-                } else {
-                    helpText += `  • None loaded\n`;
+                // Check if it's a category
+                const categoryModules = this.getModulesByCategory(query);
+                if (categoryModules.length > 0) {
+                    const helpText = MessageFormatter.categoryHelp(
+                        query,
+                        categoryModules,
+                        config.get('bot.prefix')
+                    );
+                    
+                    await context.bot.sendMessage(context.sender, { text: helpText });
+                    return;
                 }
 
-                helpText += `\n💡 *Tip*: Use \`.help <module_name>\` for detailed module info\n`;
-                helpText += `🔧 *Module Management*: \`.lm\`, \`.ulm\`, \`.rlm\`, \`.modules\`, \`.moduleinfo\`, \`.allmodules\``;
-
-                await context.bot.sendMessage(context.sender, { text: helpText });
+                // Not found
+                await context.bot.sendMessage(context.sender, {
+                    text: `❌ *Not Found*\n\nModule or category "${query}" not found.\n\n💡 Use \`.help\` to see all options.`
+                });
             }
         };
 
         this.bot.messageHandler.registerCommandHandler('help', helpCommand);
+    }
+
+    getModulesByCategory(category) {
+        const modules = [];
+        for (const [name, moduleInfo] of this.modules) {
+            const moduleCategory = moduleInfo.instance.metadata?.category?.toLowerCase();
+            if (moduleCategory === category.toLowerCase()) {
+                modules.push({
+                    name,
+                    metadata: moduleInfo.instance.metadata,
+                    commands: moduleInfo.instance.commands
+                });
+            }
+        }
+        return modules;
     }
 
     getCommandModule(commandName) {
