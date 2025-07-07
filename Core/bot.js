@@ -9,7 +9,7 @@ const MessageHandler = require('./message-handler');
 const TelegramBridge = require('../watg-bridge/bridge');
 const { connectDb } = require('../utils/db');
 const ModuleLoader = require('./module-loader');
-const { useMongoAuthState } = require('../utils/mongoAuthState'); // Import MongoDB auth state
+const { useMongoAuthState } = require('./mongo-auth-state'); // Import MongoDB auth state
 
 class HyperWaBot {
     constructor() {
@@ -206,3 +206,35 @@ class HyperWaBot {
             logger.error('Failed to send startup message:', error);
         }
     }
+
+    async connect() {
+        if (!this.sock) {
+            await this.startWhatsApp();
+        }
+        return this.sock;
+    }
+
+    async sendMessage(jid, content) {
+        if (!this.sock) {
+            throw new Error('WhatsApp socket not initialized');
+        }
+        return await this.sock.sendMessage(jid, content);
+    }
+
+    async shutdown() {
+        logger.info('🛑 Shutting down HyperWa Userbot...');
+        this.isShuttingDown = true;
+        
+        if (this.telegramBridge) {
+            await this.telegramBridge.shutdown();
+        }
+        
+        if (this.sock) {
+            await this.sock.end();
+        }
+        
+        logger.info('✅ HyperWa Userbot shutdown complete');
+    }
+}
+
+module.exports = { HyperWaBot };
