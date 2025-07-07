@@ -11,7 +11,7 @@ constructor() {
             clearAuthOnStart: false
         },
           auth: {
-                useMongo: true, // Previously mongo.session.useMongoStore; set to false for file-based auth
+                useMongoAuth: true, // Previously mongo.session.useMongoStore; set to false for file-based auth
      },
         admins: [
             '923001112222',  // Just the number part, no "@s.whatsapp.net"
