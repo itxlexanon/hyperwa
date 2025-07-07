@@ -9,7 +9,7 @@ const AUTH_DIR = "./auth_info";
 const AUTH_TAR = "auth_info.tar";
 
 async function useMongoAuthState() {
-    const useMongo = config.get("auth.mongo-session") === true;
+    const useMongo = config.mongo?.session?.useMongoStore === true;
 
     // Always create local auth state
     await fs.ensureDir(AUTH_DIR);
