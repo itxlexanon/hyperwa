@@ -1,4 +1,3 @@
-
 const logger = require('../Core/logger');
 
 class TelegramCommands {
@@ -10,7 +9,7 @@ class TelegramCommands {
         const text = msg.text;
         if (!text || !text.startsWith('/')) return;
 
-        const [command, ...args] = text.split(' ');
+        const [command, ...args] = text.trim().split(/\s+/);
 
         try {
             switch (command.toLowerCase()) {
@@ -46,44 +45,52 @@ class TelegramCommands {
     }
 
     async handleStart(chatId) {
-        const isReady = !!this.bridge.telegramBot;
-        const welcome = `🤖 *WhatsApp-Telegram Bridge*\n\n` +
-            `Status: ${isReady ? '✅ Ready' : '⏳ Initializing...'}\n` +
-            `Linked Chats: ${this.bridge.chatMappings.size}\n` +
-            `Contacts: ${this.bridge.contactMappings.size}\n` +
-            `Users: ${this.bridge.userMappings.size}`;
-        await this.bridge.telegramBot.sendMessage(chatId, welcome, { parse_mode: 'Markdown' });
+        const statusText = `🤖 *WhatsApp-Telegram Bridge*\n\n` +
+            `Status: ${this.bridge.telegramBot ? '✅ Ready' : '⏳ Initializing...'}\n` +
+            `Linked Chats: ${this.bridge.chatMappings?.size || 0}\n` +
+            `Contacts: ${this.bridge.contactMappings?.size || 0}\n` +
+            `Users: ${this.bridge.userMappings?.size || 0}`;
+        await this.bridge.telegramBot.sendMessage(chatId, statusText, { parse_mode: 'Markdown' });
     }
 
     async handleStatus(chatId) {
+        const whatsapp = this.bridge.whatsappBot?.sock;
+        const userName = whatsapp?.user?.name || 'Unknown';
+
         const status = `📊 *Bridge Status*\n\n` +
-            `🔗 WhatsApp: ${this.bridge.whatsappBot?.sock ? '✅ Connected' : '❌ Disconnected'}\n` +
-            `👤 User: ${this.bridge.whatsappBot?.sock?.user?.name || 'Unknown'}\n` +
-            `💬 Chats: ${this.bridge.chatMappings.size}\n` +
-            `👥 Users: ${this.bridge.userMappings.size}\n` +
-            `📞 Contacts: ${this.bridge.contactMappings.size}`;
+            `🔗 WhatsApp: ${whatsapp ? '✅ Connected' : '❌ Disconnected'}\n` +
+            `👤 User: ${userName}\n` +
+            `💬 Chats: ${this.bridge.chatMappings?.size || 0}\n` +
+            `👥 Users: ${this.bridge.userMappings?.size || 0}\n` +
+            `📞 Contacts: ${this.bridge.contactMappings?.size || 0}`;
         await this.bridge.telegramBot.sendMessage(chatId, status, { parse_mode: 'Markdown' });
     }
 
     async handleSend(chatId, args) {
         if (args.length < 2) {
-            await this.bridge.telegramBot.sendMessage(chatId,
+            return this.bridge.telegramBot.sendMessage(chatId,
                 '❌ Usage: /send <number> <message>\nExample: /send 1234567890 Hello!',
                 { parse_mode: 'Markdown' });
-            return;
         }
 
-        const number = args[0];
+        const number = args[0].replace(/\D/g, '');
         const message = args.slice(1).join(' ');
 
-        try {
-            const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`;
-            const result = await this.bridge.whatsappBot.sendMessage(jid, { text: message });
-            await this.bridge.telegramBot.sendMessage(chatId,
-                result?.key?.id ? `✅ Message sent to ${number}` : `⚠️ Message sent but no confirmation`,
+        if (!/^\d{6,15}$/.test(number)) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '❌ Invalid phone number format.',
                 { parse_mode: 'Markdown' });
+        }
+
+        const jid = number.includes('@') ? number : `${number}@s.whatsapp.net`;
+
+        try {
+            const result = await this.bridge.whatsappBot.sendMessage(jid, { text: message });
+            const response = result?.key?.id ? `✅ Message sent to ${number}` : `⚠️ Message sent, but no confirmation`;
+            await this.bridge.telegramBot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
         } catch (error) {
-            await this.bridge.telegramBot.sendMessage(chatId, `❌ Error sending: ${error.message}`, { parse_mode: 'Markdown' });
+            logger.error(`❌ Error sending message to ${number}:`, error);
+            await this.bridge.telegramBot.sendMessage(chatId, `❌ Error: ${error.message}`, { parse_mode: 'Markdown' });
         }
     }
 
@@ -91,7 +98,7 @@ class TelegramCommands {
         await this.bridge.telegramBot.sendMessage(chatId, '🔄 Syncing contacts...', { parse_mode: 'Markdown' });
         try {
             await this.bridge.syncContacts();
-            await this.bridge.saveMappingsToDb();
+            await this.bridge.saveMappingsToDb?.();
             await this.bridge.telegramBot.sendMessage(chatId,
                 `✅ Synced ${this.bridge.contactMappings.size} contacts from WhatsApp`,
                 { parse_mode: 'Markdown' });
@@ -100,47 +107,28 @@ class TelegramCommands {
         }
     }
 
-    async handleContacts(chatId) {
-        try {
-            const contacts = [...this.bridge.contactMappings.entries()];
-            if (contacts.length === 0) {
-                await this.bridge.telegramBot.sendMessage(chatId, '📞 No contacts found', { parse_mode: 'Markdown' });
-                return;
-            }
-            const contactList = contacts.map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`).join('\n');
-            await this.bridge.telegramBot.sendMessage(chatId, `📞 *Contacts*\n\n${contactList}`, { parse_mode: 'Markdown' });
-        } catch (error) {
-            logger.error('❌ Failed to list contacts:', error);
-            await this.bridge.telegramBot.sendMessage(chatId, `❌ Error: ${error.message}`, { parse_mode: 'Markdown' });
-        }
-    }
 
     async handleSearchContact(chatId, args) {
-        if (args.length < 1) {
-            await this.bridge.telegramBot.sendMessage(chatId,
+        if (args.length === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId,
                 '❌ Usage: /searchcontact <name or phone>\nExample: /searchcontact John',
                 { parse_mode: 'Markdown' });
-            return;
         }
 
         const query = args.join(' ').toLowerCase();
-        try {
-            const contacts = [...this.bridge.contactMappings.entries()];
-            const matches = contacts.filter(([phone, name]) =>
-                name?.toLowerCase().includes(query) || phone.includes(query)
-            );
+        const contacts = [...this.bridge.contactMappings.entries()];
+        const matches = contacts.filter(([phone, name]) =>
+            phone.includes(query) || name?.toLowerCase().includes(query)
+        );
 
-            if (matches.length === 0) {
-                await this.bridge.telegramBot.sendMessage(chatId, `❌ No contacts found for "${query}"`, { parse_mode: 'Markdown' });
-                return;
-            }
-
-            const result = matches.map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`).join('\n');
-            await this.bridge.telegramBot.sendMessage(chatId, `🔍 *Search Results*\n\n${result}`, { parse_mode: 'Markdown' });
-        } catch (error) {
-            logger.error('❌ Failed to search contacts:', error);
-            await this.bridge.telegramBot.sendMessage(chatId, `❌ Error: ${error.message}`, { parse_mode: 'Markdown' });
+        if (matches.length === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                `❌ No contacts found for "${query}"`,
+                { parse_mode: 'Markdown' });
         }
+
+        const result = matches.map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`).join('\n');
+        await this.bridge.telegramBot.sendMessage(chatId, `🔍 *Search Results*\n\n${result}`, { parse_mode: 'Markdown' });
     }
 
     async handleMenu(chatId) {
@@ -149,7 +137,6 @@ class TelegramCommands {
             `/status - Show bridge status\n` +
             `/send <number> <msg> - Send WhatsApp message\n` +
             `/sync - Sync WhatsApp contacts\n` +
-            `/contacts - View WhatsApp contacts\n` +
             `/searchcontact <name/phone> - Search contacts`;
         await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
@@ -161,7 +148,6 @@ class TelegramCommands {
                 { command: 'status', description: 'Show bridge status' },
                 { command: 'send', description: 'Send WhatsApp message' },
                 { command: 'sync', description: 'Sync WhatsApp contacts' },
-                { command: 'contacts', description: 'View WhatsApp contacts' },
                 { command: 'searchcontact', description: 'Search WhatsApp contacts' }
             ]);
             logger.info('✅ Telegram bot commands registered');
