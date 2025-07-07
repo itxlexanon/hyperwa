@@ -9,7 +9,8 @@ const MessageHandler = require('./message-handler');
 const TelegramBridge = require('../watg-bridge/bridge');
 const { connectDb } = require('../utils/db');
 const ModuleLoader = require('./module-loader');
-const { useMongoAuthState } = require('..utils//mongoAuthState');
+const { useMongoAuthState } = require('../utils/mongoAuthState'); // Import MongoDB auth state
+
 class HyperWaBot {
     constructor() {
         this.sock = null;
@@ -20,6 +21,7 @@ class HyperWaBot {
         this.db = null;
         this.moduleLoader = new ModuleLoader(this);
         this.qrCodeSent = false;
+        this.useMongoAuth = config.get('auth.useMongoAuth', false); // Add config option for MongoDB auth
     }
 
     async initialize() {
@@ -31,11 +33,10 @@ class HyperWaBot {
             logger.info('✅ Database connected successfully!');
         } catch (error) {
             logger.error('❌ Failed to connect to database:', error);
-            // Do not exit; continue with limited functionality
-            logger.warn('⚠️ Continuing without database connection...');
+            process.exit(1);
         }
 
-        // Initialize Telegram bridge
+        // Initialize Telegram bridge first (for QR code sending)
         if (config.get('telegram.enabled')) {
             try {
                 this.telegramBridge = new TelegramBridge(this);
@@ -43,19 +44,11 @@ class HyperWaBot {
                 logger.info('✅ Telegram bridge initialized');
             } catch (error) {
                 logger.error('❌ Failed to initialize Telegram bridge:', error);
-                // Do not exit; continue without Telegram bridge
-                logger.warn('⚠️ Continuing without Telegram bridge...');
             }
         }
 
-        // Load modules
-        try {
-            await this.moduleLoader.loadModules();
-            logger.info('✅ Modules loaded successfully');
-        } catch (error) {
-            logger.error('❌ Failed to load modules:', error);
-            logger.warn('⚠️ Continuing without custom modules...');
-        }
+        // Load modules using the ModuleLoader
+        await this.moduleLoader.loadModules();
         
         // Start WhatsApp connection
         await this.startWhatsApp();
@@ -64,15 +57,26 @@ class HyperWaBot {
     }
 
     async startWhatsApp() {
-        // Choose auth method based on config
-        const useMongo = config.get('auth.useMongo') === true;
-        const authMethod = useMongo ? useMongoAuthState : useMultiFileAuthState;
         let state, saveCreds;
+        
+        // Choose auth method based on configuration
+        if (this.useMongoAuth) {
+            logger.info('🔧 Using MongoDB auth state...');
+            try {
+                ({ state, saveCreds } = await useMongoAuthState());
+            } catch (error) {
+                logger.error('❌ Failed to initialize MongoDB auth state:', error);
+                logger.info('🔄 Falling back to file-based auth...');
+                ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
+            }
+        } else {
+            logger.info('🔧 Using file-based auth state...');
+            ({ state, saveCreds } = await useMultiFileAuthState(this.authPath));
+        }
+
+        const { version } = await fetchLatestBaileysVersion();
 
         try {
-            ({ state, saveCreds } = await authMethod(this.authPath));
-            const { version } = await fetchLatestBaileysVersion();
-
             this.sock = makeWASocket({
                 auth: state,
                 version,
@@ -101,7 +105,7 @@ class HyperWaBot {
             }));
         } catch (error) {
             logger.error('❌ Failed to initialize WhatsApp socket:', error);
-            logger.info('🔄 Retrying in 5 seconds...');
+            logger.info('🔄 Retrying with new QR code...');
             setTimeout(() => this.startWhatsApp(), 5000); // Retry on error
         }
     }
@@ -129,33 +133,23 @@ class HyperWaBot {
                 const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-                if (statusCode === DisconnectReason.loggedOut) {
-                    logger.warn('❌ Session logged out. Clearing session and generating new QR code...');
-                    // Clear session from MongoDB if using MongoDB auth
-                    if (config.get('auth.useMongo') && this.db) {
-                        try {
-                            await this.db.collection('auth').deleteOne({ _id: 'session' });
-                            logger.info('✅ Cleared invalid session from MongoDB');
-                        } catch (error) {
-                            logger.error('❌ Failed to clear session from MongoDB:', error);
-                        }
-                    }
-                    // Clear local auth_info directory
-                    try {
-                        await fs.remove(this.authPath);
-                        logger.info('✅ Cleared local auth_info directory');
-                    } catch (error) {
-                        logger.error('❌ Failed to clear auth_info directory:', error);
-                    }
-                    // Restart WhatsApp connection to generate new QR code
-                    logger.info('🔄 Restarting WhatsApp connection...');
-                    setTimeout(() => this.startWhatsApp(), 1000);
-                } else if (shouldReconnect && !this.isShuttingDown) {
+                if (shouldReconnect && !this.isShuttingDown) {
                     logger.warn('🔄 Connection closed, reconnecting...');
                     setTimeout(() => this.startWhatsApp(), 5000);
                 } else {
-                    logger.error('❌ Connection closed with unexpected error. Retrying...');
-                    setTimeout(() => this.startWhatsApp(), 5000);
+                    logger.error('❌ Connection closed permanently. Please delete auth_info and restart.');
+                    // If using MongoDB auth, clear the session
+                    if (this.useMongoAuth) {
+                        try {
+                            const db = await connectDb();
+                            const coll = db.collection("auth");
+                            await coll.deleteOne({ _id: "session" });
+                            logger.info('🗑️ MongoDB auth session cleared');
+                        } catch (error) {
+                            logger.error('❌ Failed to clear MongoDB auth session:', error);
+                        }
+                    }
+                    process.exit(1); // Exit only for permanent closure (e.g., logged out)
                 }
             } else if (connection === 'open') {
                 await this.onConnectionOpen();
@@ -171,95 +165,44 @@ class HyperWaBot {
         
         // Set owner if not set
         if (!config.get('bot.owner') && this.sock.user) {
-            try {
-                config.set('bot.owner', this.sock.user.id);
-                logger.info(`👑 Owner set to: ${this.sock.user.id}`);
-            } catch (error) {
-                logger.error('❌ Failed to set owner:', error);
-            }
+            config.set('bot.owner', this.sock.user.id);
+            logger.info(`👑 Owner set to: ${this.sock.user.id}`);
         }
 
         // Setup WhatsApp handlers for Telegram bridge
         if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.setupWhatsAppHandlers();
-            } catch (error) {
-                logger.error('❌ Failed to setup Telegram bridge handlers:', error);
-            }
+            await this.telegramBridge.setupWhatsAppHandlers();
         }
 
-        // Send startup message
+        // Send startup message to owner and Telegram
         await this.sendStartupMessage();
         
         // Notify Telegram bridge of connection
         if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.syncWhatsAppConnection();
-            } catch (error) {
-                logger.error('❌ Failed to sync Telegram bridge connection:', error);
-            }
+            await this.telegramBridge.syncWhatsAppConnection();
         }
     }
 
     async sendStartupMessage() {
         const owner = config.get('bot.owner');
-        if (!owner) {
-            logger.warn('⚠️ No owner set. Skipping startup message.');
-            return;
-        }
+        if (!owner) return;
 
+        const authMethod = this.useMongoAuth ? 'MongoDB' : 'File-based';
         const startupMessage = `🚀 *${config.get('bot.name')} v${config.get('bot.version')}* is now online!\n\n` +
                               `🔥 *HyperWa Features Active:*\n` +
                               `• 📱 Modular Architecture\n` +
+                              `• 🔐 Auth Method: ${authMethod}\n` +
                               `• 🤖 Telegram Bridge: ${config.get('telegram.enabled') ? '✅' : '❌'}\n` +
                               `• 🔧 Custom Modules: ${config.get('features.customModules') ? '✅' : '❌'}\n` +
-                              `• 💾 MongoDB Auth: ${config.get('auth.useMongo') ? '✅' : '❌'}\n` +
                               `Type *${config.get('bot.prefix')}help* for available commands!`;
 
         try {
             await this.sock.sendMessage(owner, { text: startupMessage });
-            logger.info('✅ Startup message sent to owner');
             
             if (this.telegramBridge) {
                 await this.telegramBridge.logToTelegram('🚀 HyperWa Bot Started', startupMessage);
-                logger.info('✅ Startup message sent to Telegram');
             }
         } catch (error) {
-            logger.error('❌ Failed to send startup message:', error);
+            logger.error('Failed to send startup message:', error);
         }
     }
-
-    async connect() {
-        if (!this.sock) {
-            await this.startWhatsApp();
-        }
-        return this.sock;
-    }
-
-    async shutdown() {
-        logger.info('🛑 Shutting down HyperWa Userbot...');
-        this.isShuttingDown = true;
-        
-        if (this.telegramBridge) {
-            try {
-                await this.telegramBridge.shutdown();
-                logger.info('✅ Telegram bridge shutdown');
-            } catch (error) {
-                logger.error('❌ Failed to shutdown Telegram bridge:', error);
-            }
-        }
-        
-        if (this.sock) {
-            try {
-                await this.sock.end();
-                logger.info('✅ WhatsApp socket closed');
-            } catch (error) {
-                logger.error('❌ Failed to close WhatsApp socket:', error);
-            }
-        }
-        
-        logger.info('✅ HyperWa Userbot shutdown complete');
-    }
-}
-
-module.exports = { HyperWaBot };
