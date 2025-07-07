@@ -9,7 +9,7 @@ const MessageHandler = require('./message-handler');
 const TelegramBridge = require('../watg-bridge/bridge');
 const { connectDb } = require('../utils/db');
 const ModuleLoader = require('./module-loader');
-const { useMongoAuthState } = require('./mongo-auth-state'); // Import MongoDB auth state
+const { useMongoAuthState } = require('../utils/mongoAuthState'); // Import MongoDB auth state
 
 class HyperWaBot {
     constructor() {
