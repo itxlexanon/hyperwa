@@ -57,11 +57,12 @@ class TelegramCommands {
             return this.bridge.telegramBot.sendMessage(chatId,
                 '❌ Usage: /addfilter <word>', { parse_mode: 'Markdown' });
         }
-        const word = args.join(' ').toLowerCase();
+        const word = args.join(' ').toLowerCase().trim();
+        if (!word) return;
         this.filters.add(word);
+        await this.saveFiltersToDb();
         await this.bridge.telegramBot.sendMessage(chatId,
             `✅ Added filter: \`${word}\``, { parse_mode: 'Markdown' });
-        await this.saveFiltersToDb();
     }
 
     async handleListFilters(chatId) {
@@ -76,26 +77,39 @@ class TelegramCommands {
 
     async handleClearFilters(chatId) {
         this.filters.clear();
+        await this.saveFiltersToDb();
         await this.bridge.telegramBot.sendMessage(chatId,
             `✅ All filters cleared.`, { parse_mode: 'Markdown' });
-        await this.saveFiltersToDb();
     }
 
     isBlockedMessage(text) {
-        if (!text) return false;
-        const lower = text.toLowerCase();
+        if (!text || typeof text !== 'string') return false;
+        const lower = text.trim().toLowerCase();
+
         for (const word of this.filters) {
-            if (lower.startsWith(word)) return true;
+            if (!word || word.trim() === '') continue;
+            if (lower.startsWith(word)) {
+                console.log(`🔒 Blocked message due to filter: "${word}"`);
+                return true;
+            }
         }
         return false;
     }
 
     async loadFiltersFromDb() {
+        this.filters = new Set();
+
         try {
             const doc = await this.bridge.collection.findOne({ type: 'filters' });
             if (doc?.data?.list?.length) {
-                doc.data.list.forEach(word => this.filters.add(word));
+                for (const word of doc.data.list) {
+                    if (typeof word === 'string' && word.trim() !== '') {
+                        this.filters.add(word.trim().toLowerCase());
+                    }
+                }
                 logger.info(`🛡️ Loaded ${this.filters.size} filters from DB`);
+            } else {
+                logger.info('🛡️ No filters found in DB.');
             }
         } catch (err) {
             logger.error('❌ Failed to load filters from DB:', err);
@@ -180,8 +194,7 @@ class TelegramCommands {
     async handleSearchContact(chatId, args) {
         if (args.length === 0) {
             return this.bridge.telegramBot.sendMessage(chatId,
-                '❌ Usage: /searchcontact <name or phone>\nExample: /searchcontact John',
-                { parse_mode: 'Markdown' });
+                '❌ Usage: /searchcontact <name or phone>', { parse_mode: 'Markdown' });
         }
 
         const query = args.join(' ').toLowerCase();
@@ -192,8 +205,7 @@ class TelegramCommands {
 
         if (matches.length === 0) {
             return this.bridge.telegramBot.sendMessage(chatId,
-                `❌ No contacts found for "${query}"`,
-                { parse_mode: 'Markdown' });
+                `❌ No contacts found for "${query}"`, { parse_mode: 'Markdown' });
         }
 
         const result = matches.map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`).join('\n');
@@ -215,4 +227,3 @@ class TelegramCommands {
 }
 
 module.exports = TelegramCommands;
- 
