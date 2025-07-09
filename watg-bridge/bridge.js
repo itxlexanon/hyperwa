@@ -14,7 +14,6 @@ class TelegramBridge {
         this.db = null;
         this.commands = null;
         this.isShuttingDown = false;
-        this.silentTopicRenames = new Set(); // Track silent topic renames
     }
 
     async initialize() {
@@ -92,7 +91,7 @@ class TelegramBridge {
         const chatId = config.get('telegram.chatId');
         if (msg.chat.id.toString() !== chatId.toString()) return;
 
-        // Check if message should be filtered
+        // Check if message should be filtered (NEW FEATURE)
         if (msg.text && this.commands.shouldFilterMessage(msg.text)) {
             logger.debug(`🚫 Message filtered: "${msg.text.substring(0, 50)}..."`);
             return;
@@ -375,30 +374,6 @@ class TelegramBridge {
         }
     }
 
-    async renameTopicSilently(jid, newName) {
-        try {
-            const topicId = this.chatMappings.get(jid);
-            if (!topicId) return;
-
-            const chatId = config.get('telegram.chatId');
-            
-            // Mark this rename as silent
-            this.silentTopicRenames.add(topicId);
-            
-            // Rename the topic
-            await this.telegramBot.editForumTopic(chatId, topicId, newName);
-            
-            // Remove from silent set after a short delay
-            setTimeout(() => {
-                this.silentTopicRenames.delete(topicId);
-            }, 5000);
-
-            logger.debug(`🔄 Silently renamed topic ${topicId} to "${newName}"`);
-        } catch (error) {
-            logger.error(`❌ Error renaming topic for ${jid}:`, error);
-        }
-    }
-
     async getSenderInfo(participant, isGroup) {
         const phone = participant.split('@')[0];
         const contactName = this.contactMappings.get(phone);
@@ -443,11 +418,20 @@ class TelegramBridge {
                         const oldName = this.contactMappings.get(phone);
                         this.contactMappings.set(phone, name);
                         
-                        // Update topic name if it changed
+                        // Update topic name if it changed (SILENT RENAME FEATURE)
                         if (oldName !== name) {
                             const jid = `${phone}@s.whatsapp.net`;
-                            const newTopicName = `👤 ${name}`;
-                            await this.renameTopicSilently(jid, newTopicName);
+                            const topicId = this.chatMappings.get(jid);
+                            if (topicId) {
+                                try {
+                                    const chatId = config.get('telegram.chatId');
+                                    const newTopicName = `👤 ${name}`;
+                                    await this.telegramBot.editForumTopic(chatId, topicId, newTopicName);
+                                    logger.debug(`🔄 Silently renamed topic ${topicId} to "${newTopicName}"`);
+                                } catch (error) {
+                                    logger.error(`❌ Error renaming topic for ${jid}:`, error);
+                                }
+                            }
                         }
                         
                         syncedCount++;
