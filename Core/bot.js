@@ -10,6 +10,7 @@ const TelegramBridge = require('../watg-bridge/bridge');
 const { connectDb } = require('../utils/db');
 const ModuleLoader = require('./module-loader');
 const { useMongoAuthState } = require('../utils/mongoAuthState'); 
+
 class HyperWaBot {
     constructor() {
         this.sock = null;
@@ -32,9 +33,7 @@ class HyperWaBot {
             logger.info('✅ Database connected successfully!');
         } catch (error) {
             logger.error('❌ Failed to connect to database:', error);
-            logger.info('🔄 Retrying database connection in 10 seconds...');
-            setTimeout(() => this.initialize(), 10000);
-            return;
+            process.exit(1);
         }
 
         // Initialize Telegram bridge first (for QR code sending)
@@ -45,17 +44,11 @@ class HyperWaBot {
                 logger.info('✅ Telegram bridge initialized');
             } catch (error) {
                 logger.error('❌ Failed to initialize Telegram bridge:', error);
-                // Don't exit, continue without Telegram bridge
             }
         }
 
         // Load modules using the ModuleLoader
-        try {
-            await this.moduleLoader.loadModules();
-        } catch (error) {
-            logger.error('❌ Failed to load modules:', error);
-            // Don't exit, continue without modules
-        }
+        await this.moduleLoader.loadModules();
         
         // Start WhatsApp connection
         await this.startWhatsApp();
@@ -144,7 +137,7 @@ class HyperWaBot {
                     logger.warn('🔄 Connection closed, reconnecting...');
                     setTimeout(() => this.startWhatsApp(), 5000);
                 } else {
-                    logger.error('❌ Connection closed permanently. Clearing session and retrying...');
+                    logger.error('❌ Connection closed permanently. Please delete auth_info and restart.');
                     // If using MongoDB auth, clear the session
                     if (this.useMongoAuth) {
                         try {
@@ -155,18 +148,8 @@ class HyperWaBot {
                         } catch (error) {
                             logger.error('❌ Failed to clear MongoDB auth session:', error);
                         }
-                    } else {
-                        // Clear local auth files
-                        try {
-                            await fs.remove(this.authPath);
-                            logger.info('🗑️ Local auth files cleared');
-                        } catch (error) {
-                            logger.error('❌ Failed to clear local auth files:', error);
-                        }
                     }
-                    // Retry connection instead of exiting
-                    logger.info('🔄 Retrying connection in 10 seconds...');
-                    setTimeout(() => this.startWhatsApp(), 10000);
+                    process.exit(1); // Exit only for permanent closure (e.g., logged out)
                 }
             } else if (connection === 'open') {
                 await this.onConnectionOpen();
@@ -174,14 +157,7 @@ class HyperWaBot {
         });
 
         this.sock.ev.on('creds.update', saveCreds);
-        this.sock.ev.on('messages.upsert', (update) => {
-            try {
-                this.messageHandler.handleMessages(update);
-            } catch (error) {
-                logger.error('❌ Error handling message:', error);
-                // Don't crash, just log the error and continue
-            }
-        });
+        this.sock.ev.on('messages.upsert', this.messageHandler.handleMessages.bind(this.messageHandler));
     }
 
     async onConnectionOpen() {
@@ -228,7 +204,6 @@ class HyperWaBot {
             }
         } catch (error) {
             logger.error('Failed to send startup message:', error);
-            // Don't crash, just log the error
         }
     }
 
@@ -261,29 +236,5 @@ class HyperWaBot {
         logger.info('✅ HyperWa Userbot shutdown complete');
     }
 }
-
-// Global error handlers to prevent crashes
-process.on('uncaughtException', (error) => {
-    logger.error('🚨 Uncaught Exception:', error);
-    logger.info('🔄 Bot will continue running...');
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    logger.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
-    logger.info('🔄 Bot will continue running...');
-});
-
-// Graceful shutdown handlers
-process.on('SIGINT', async () => {
-    logger.info('🛑 Received SIGINT, shutting down gracefully...');
-    // Add your cleanup code here if needed
-    process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-    logger.info('🛑 Received SIGTERM, shutting down gracefully...');
-    // Add your cleanup code here if needed
-    process.exit(0);
-});
 
 module.exports = { HyperWaBot };

@@ -3,8 +3,6 @@ const logger = require('../Core/logger');
 class TelegramCommands {
     constructor(bridge) {
         this.bridge = bridge;
-        this.filters = new Set();
-        this.loadFiltersFromDb();
     }
 
     async handleCommand(msg) {
@@ -27,17 +25,11 @@ class TelegramCommands {
                 case '/sync':
                     await this.handleSync(msg.chat.id);
                     break;
+                case '/contacts':
+                    await this.handleContacts(msg.chat.id);
+                    break;
                 case '/searchcontact':
                     await this.handleSearchContact(msg.chat.id, args);
-                    break;
-                case '/addfilter':
-                    await this.handleAddFilter(msg.chat.id, args);
-                    break;
-                case '/listfilters':
-                    await this.handleListFilters(msg.chat.id);
-                    break;
-                case '/clearfilters':
-                    await this.handleClearFilters(msg.chat.id);
                     break;
                 default:
                     await this.handleMenu(msg.chat.id);
@@ -49,82 +41,6 @@ class TelegramCommands {
                 `❌ Command error: ${error.message}`,
                 { parse_mode: 'Markdown' }
             );
-        }
-    }
-
-    async handleAddFilter(chatId, args) {
-        if (args.length === 0) {
-            return this.bridge.telegramBot.sendMessage(chatId,
-                '❌ Usage: /addfilter <word>', { parse_mode: 'Markdown' });
-        }
-        const word = args.join(' ').toLowerCase().trim();
-        if (!word) return;
-        this.filters.add(word);
-        await this.saveFiltersToDb();
-        await this.bridge.telegramBot.sendMessage(chatId,
-            `✅ Added filter: \`${word}\``, { parse_mode: 'Markdown' });
-    }
-
-    async handleListFilters(chatId) {
-        if (this.filters.size === 0) {
-            return this.bridge.telegramBot.sendMessage(chatId,
-                'ℹ️ No filters set.', { parse_mode: 'Markdown' });
-        }
-        const list = [...this.filters].map((w, i) => `${i + 1}. \`${w}\``).join('\n');
-        await this.bridge.telegramBot.sendMessage(chatId,
-            `🛡️ *Active Filters:*\n${list}`, { parse_mode: 'Markdown' });
-    }
-
-    async handleClearFilters(chatId) {
-        this.filters.clear();
-        await this.saveFiltersToDb();
-        await this.bridge.telegramBot.sendMessage(chatId,
-            `✅ All filters cleared.`, { parse_mode: 'Markdown' });
-    }
-
-    isBlockedMessage(text) {
-        if (!text || typeof text !== 'string') return false;
-        const lower = text.trim().toLowerCase();
-
-        for (const word of this.filters) {
-            if (!word || word.trim() === '') continue;
-            if (lower.startsWith(word)) {
-                console.log(`🔒 Blocked message due to filter: "${word}"`);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    async loadFiltersFromDb() {
-        this.filters = new Set();
-
-        try {
-            const doc = await this.bridge.collection.findOne({ type: 'filters' });
-            if (doc?.data?.list?.length) {
-                for (const word of doc.data.list) {
-                    if (typeof word === 'string' && word.trim() !== '') {
-                        this.filters.add(word.trim().toLowerCase());
-                    }
-                }
-                logger.info(`🛡️ Loaded ${this.filters.size} filters from DB`);
-            } else {
-                logger.info('🛡️ No filters found in DB.');
-            }
-        } catch (err) {
-            logger.error('❌ Failed to load filters from DB:', err);
-        }
-    }
-
-    async saveFiltersToDb() {
-        try {
-            await this.bridge.collection.updateOne(
-                { type: 'filters' },
-                { $set: { type: 'filters', data: { list: Array.from(this.filters) } } },
-                { upsert: true }
-            );
-        } catch (err) {
-            logger.error('❌ Failed to save filters to DB:', err);
         }
     }
 
@@ -191,10 +107,12 @@ class TelegramCommands {
         }
     }
 
+
     async handleSearchContact(chatId, args) {
         if (args.length === 0) {
             return this.bridge.telegramBot.sendMessage(chatId,
-                '❌ Usage: /searchcontact <name or phone>', { parse_mode: 'Markdown' });
+                '❌ Usage: /searchcontact <name or phone>\nExample: /searchcontact John',
+                { parse_mode: 'Markdown' });
         }
 
         const query = args.join(' ').toLowerCase();
@@ -205,7 +123,8 @@ class TelegramCommands {
 
         if (matches.length === 0) {
             return this.bridge.telegramBot.sendMessage(chatId,
-                `❌ No contacts found for "${query}"`, { parse_mode: 'Markdown' });
+                `❌ No contacts found for "${query}"`,
+                { parse_mode: 'Markdown' });
         }
 
         const result = matches.map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`).join('\n');
@@ -218,13 +137,24 @@ class TelegramCommands {
             `/status - Show bridge status\n` +
             `/send <number> <msg> - Send WhatsApp message\n` +
             `/sync - Sync WhatsApp contacts\n` +
-            `/searchcontact <query> - Search contacts\n` +
-            `/addfilter <word> - Add word to filter list\n` +
-            `/listfilters - View active filters\n` +
-            `/clearfilters - Remove all filters`;
+            `/searchcontact <name/phone> - Search contacts`;
         await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    }
+
+    async registerBotCommands() {
+        try {
+            await this.bridge.telegramBot.setMyCommands([
+                { command: 'start', description: 'Show bot info' },
+                { command: 'status', description: 'Show bridge status' },
+                { command: 'send', description: 'Send WhatsApp message' },
+                { command: 'sync', description: 'Sync WhatsApp contacts' },
+                { command: 'searchcontact', description: 'Search WhatsApp contacts' }
+            ]);
+            logger.info('✅ Telegram bot commands registered');
+        } catch (error) {
+            logger.error('❌ Failed to register Telegram bot commands:', error);
+        }
     }
 }
 
 module.exports = TelegramCommands;
- 
