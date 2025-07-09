@@ -1,4 +1,5 @@
 
+
 class Config {
 constructor() {
     this.defaultConfig = {
@@ -11,7 +12,7 @@ constructor() {
             clearAuthOnStart: false
         },
           auth: {
-                useMongoAuth: true, // Previously mongo.session.useMongoStore; set to false for file-based auth
+                useMongoAuth: true, //  set to false for file-based auth, ture mongodb auth base
      },
         admins: [
             '923001112222',  // Just the number part, no "@s.whatsapp.net"
@@ -50,8 +51,7 @@ constructor() {
                 enabled: true,
                 botToken: '7580382614:AAH30PW6TFmgRzbC7HUXIHQ35GpndbJOIEI',
                 chatId: '-1002287300661',
-                adminIds: [7580382614],
-                sudoUsers: [7580382614],
+                logChannel: '-1002287300661',
                 features: {
                     topics: true,
                     mediaSync: true,
