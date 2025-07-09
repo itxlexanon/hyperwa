@@ -29,6 +29,7 @@ class TelegramBridge {
 
             this.telegramBot = new TelegramBot(token, { polling: true });
             this.commands = new TelegramCommands(this);
+            await this.commands.loadFiltersFromDb();
 
             // Load message filters
             await this.commands.loadFiltersFromDb();
@@ -87,6 +88,12 @@ class TelegramBridge {
 
     async handleTelegramMessage(msg) {
         if (this.isShuttingDown) return;
+            // Check if message should be filtered (NEW FEATURE)
+            if (msg.text && this.commands.shouldFilterMessage(msg.text)) {
+                logger.debug(`🚫 Message filtered: "${msg.text.substring(0, 50)}..."`);
+                return;
+            }
+
 
         const chatId = config.get('telegram.chatId');
         if (msg.chat.id.toString() !== chatId.toString()) return;
@@ -582,6 +589,30 @@ class TelegramBridge {
             logger.debug('✅ Saved mappings to database');
         } catch (error) {
             logger.error('❌ Error saving mappings to database:', error);
+        }
+    }
+
+    async saveFiltersToDb() {
+        try {
+            if (!this.db) return;
+
+            const collection = this.db.collection('bridge_settings');
+            
+            await collection.updateOne(
+                { type: 'message_filters' },
+                { 
+                    $set: { 
+                        filters: Array.from(this.commands.messageFilters),
+                        updatedAt: new Date()
+                    } 
+                },
+                { upsert: true }
+            );
+
+            logger.debug('✅ Saved message filters to database');
+        } catch (error) {
+            logger.error('❌ Error saving filters to database:', error);
+            throw error;
         }
     }
 
