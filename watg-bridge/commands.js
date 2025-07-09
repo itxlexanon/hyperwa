@@ -3,6 +3,7 @@ const logger = require('../Core/logger');
 class TelegramCommands {
     constructor(bridge) {
         this.bridge = bridge;
+        this.messageFilters = new Set(); // Store filter words/phrases
     }
 
     async handleCommand(msg) {
@@ -30,6 +31,18 @@ class TelegramCommands {
                     break;
                 case '/searchcontact':
                     await this.handleSearchContact(msg.chat.id, args);
+                    break;
+                case '/addfilter':
+                    await this.handleAddFilter(msg.chat.id, args);
+                    break;
+                case '/removefilter':
+                    await this.handleRemoveFilter(msg.chat.id, args);
+                    break;
+                case '/listfilters':
+                    await this.handleListFilters(msg.chat.id);
+                    break;
+                case '/clearfilters':
+                    await this.handleClearFilters(msg.chat.id);
                     break;
                 default:
                     await this.handleMenu(msg.chat.id);
@@ -107,6 +120,146 @@ class TelegramCommands {
         }
     }
 
+    async handleAddFilter(chatId, args) {
+        if (args.length === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '❌ Usage: /addfilter <word or phrase>\nExample: /addfilter !bot\nExample: /addfilter "admin message"',
+                { parse_mode: 'Markdown' });
+        }
+
+        const filter = args.join(' ').toLowerCase();
+        this.messageFilters.add(filter);
+        
+        // Save to database
+        try {
+            await this.bridge.saveFiltersToDb();
+            await this.bridge.telegramBot.sendMessage(chatId,
+                `✅ Filter added: "${filter}"\n\nMessages starting with this will not be sent to WhatsApp.`,
+                { parse_mode: 'Markdown' });
+        } catch (error) {
+            await this.bridge.telegramBot.sendMessage(chatId,
+                `❌ Failed to save filter: ${error.message}`,
+                { parse_mode: 'Markdown' });
+        }
+    }
+
+    async handleRemoveFilter(chatId, args) {
+        if (args.length === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '❌ Usage: /removefilter <word or phrase>\nExample: /removefilter !bot',
+                { parse_mode: 'Markdown' });
+        }
+
+        const filter = args.join(' ').toLowerCase();
+        
+        if (!this.messageFilters.has(filter)) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                `❌ Filter "${filter}" not found.\nUse /listfilters to see active filters.`,
+                { parse_mode: 'Markdown' });
+        }
+
+        this.messageFilters.delete(filter);
+        
+        try {
+            await this.bridge.saveFiltersToDb();
+            await this.bridge.telegramBot.sendMessage(chatId,
+                `✅ Filter removed: "${filter}"`,
+                { parse_mode: 'Markdown' });
+        } catch (error) {
+            await this.bridge.telegramBot.sendMessage(chatId,
+                `❌ Failed to save changes: ${error.message}`,
+                { parse_mode: 'Markdown' });
+        }
+    }
+
+    async handleListFilters(chatId) {
+        if (this.messageFilters.size === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '📋 *Message Filters*\n\nNo filters configured.\n\nUse /addfilter to add message filters.',
+                { parse_mode: 'Markdown' });
+        }
+
+        const filterList = Array.from(this.messageFilters)
+            .map((filter, index) => `${index + 1}. "${filter}"`)
+            .join('\n');
+
+        await this.bridge.telegramBot.sendMessage(chatId,
+            `📋 *Message Filters (${this.messageFilters.size})*\n\n${filterList}\n\n💡 Messages starting with these words/phrases will not be sent to WhatsApp.`,
+            { parse_mode: 'Markdown' });
+    }
+
+    async handleClearFilters(chatId) {
+        if (this.messageFilters.size === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '📋 No filters to clear.',
+                { parse_mode: 'Markdown' });
+        }
+
+        const count = this.messageFilters.size;
+        this.messageFilters.clear();
+        
+        try {
+            await this.bridge.saveFiltersToDb();
+            await this.bridge.telegramBot.sendMessage(chatId,
+                `✅ Cleared ${count} message filters.`,
+                { parse_mode: 'Markdown' });
+        } catch (error) {
+            await this.bridge.telegramBot.sendMessage(chatId,
+                `❌ Failed to save changes: ${error.message}`,
+                { parse_mode: 'Markdown' });
+        }
+    }
+
+    // Check if message should be filtered
+    shouldFilterMessage(text) {
+        if (!text || this.messageFilters.size === 0) return false;
+        
+        const lowerText = text.toLowerCase();
+        
+        for (const filter of this.messageFilters) {
+            if (lowerText.startsWith(filter)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    async loadFiltersFromDb() {
+        try {
+            const db = this.bridge.db;
+            if (!db) return;
+            
+            const collection = db.collection('bridge_settings');
+            const settings = await collection.findOne({ type: 'message_filters' });
+            
+            if (settings && settings.filters) {
+                this.messageFilters = new Set(settings.filters);
+                logger.info(`✅ Loaded ${this.messageFilters.size} message filters`);
+            }
+        } catch (error) {
+            logger.error('❌ Failed to load message filters:', error);
+        }
+    }
+
+    async handleContacts(chatId) {
+        const contacts = [...this.bridge.contactMappings.entries()];
+        if (contacts.length === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId,
+                '📞 No contacts found. Use /sync to sync WhatsApp contacts.',
+                { parse_mode: 'Markdown' });
+        }
+
+        const contactList = contacts
+            .slice(0, 50)
+            .map(([phone, name]) => `📱 ${name || 'Unknown'} (+${phone})`)
+            .join('\n');
+
+        const message = `📞 *WhatsApp Contacts (${contacts.length})*\n\n${contactList}` +
+            (contacts.length > 50 ? '\n\n... and more. Use /searchcontact to find specific contacts.' : '');
+
+        await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    }
 
     async handleSearchContact(chatId, args) {
         if (args.length === 0) {
@@ -137,7 +290,12 @@ class TelegramCommands {
             `/status - Show bridge status\n` +
             `/send <number> <msg> - Send WhatsApp message\n` +
             `/sync - Sync WhatsApp contacts\n` +
-            `/searchcontact <name/phone> - Search contacts`;
+            `/searchcontact <name/phone> - Search contacts\n\n` +
+            `🔧 *Message Filtering*\n` +
+            `/addfilter <word> - Add message filter\n` +
+            `/removefilter <word> - Remove message filter\n` +
+            `/listfilters - Show all filters\n` +
+            `/clearfilters - Clear all filters`;
         await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
 
@@ -148,7 +306,11 @@ class TelegramCommands {
                 { command: 'status', description: 'Show bridge status' },
                 { command: 'send', description: 'Send WhatsApp message' },
                 { command: 'sync', description: 'Sync WhatsApp contacts' },
-                { command: 'searchcontact', description: 'Search WhatsApp contacts' }
+                { command: 'searchcontact', description: 'Search WhatsApp contacts' },
+                { command: 'addfilter', description: 'Add message filter' },
+                { command: 'removefilter', description: 'Remove message filter' },
+                { command: 'listfilters', description: 'List message filters' },
+                { command: 'clearfilters', description: 'Clear all filters' }
             ]);
             logger.info('✅ Telegram bot commands registered');
         } catch (error) {
