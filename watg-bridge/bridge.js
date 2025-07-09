@@ -1337,6 +1337,8 @@ async handleTelegramMessage(msg) {
 
         await this.sendTypingPresence(whatsappJid);
 
+        console.log('✉️ Incoming Telegram message:', msg.text);
+
         if (msg.text && this.commands?.isBlockedMessage(msg.text)) {
             await this.setReaction(msg.chat.id, msg.message_id, '🚫');
             return;
@@ -1387,6 +1389,7 @@ async handleTelegramMessage(msg) {
         logger.error('❌ Failed to handle Telegram message:', error);
         await this.setReaction(msg.chat.id, msg.message_id, '❌');
     }
+}
 }
 
     async handleStatusReply(msg) {
