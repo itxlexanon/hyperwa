@@ -1390,7 +1390,7 @@ async handleTelegramMessage(msg) {
         await this.setReaction(msg.chat.id, msg.message_id, '❌');
     }
 }
-}
+
 
     async handleStatusReply(msg) {
         try {
