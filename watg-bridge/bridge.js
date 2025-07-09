@@ -1391,7 +1391,6 @@ async handleTelegramMessage(msg) {
     }
 }
 
-
     async handleStatusReply(msg) {
         try {
             const originalStatusKey = this.statusMessageMapping.get(msg.reply_to_message.message_id);
