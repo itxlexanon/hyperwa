@@ -60,6 +60,8 @@ class TelegramBridge {
             await this.commands.registerBotCommands();
             await this.setupTelegramHandlers();
             await this.loadMappingsFromDb();
+            await this.loadFiltersFromDb();
+
             
             // Wait for WhatsApp to be ready before syncing
             if (this.whatsappBot?.sock?.user) {
@@ -154,6 +156,32 @@ class TelegramBridge {
             logger.error('❌ Failed to save chat mapping:', error);
         }
     }
+
+   async loadFiltersFromDb() {
+    this.filters = new Set();
+
+    const filterDocs = await this.collection.find({ type: 'filter' }).toArray();
+    for (const doc of filterDocs) {
+        this.filters.add(doc.word);
+    }
+
+    logger.info(`✅ Loaded ${this.filters.size} filters from DB`);
+}
+   
+   async addFilter(word) {
+    this.filters.add(word);
+    await this.collection.updateOne(
+        { type: 'filter', word },
+        { $set: { type: 'filter', word } },
+        { upsert: true }
+    );
+}
+
+async clearFilters() {
+    this.filters.clear();
+    await this.collection.deleteMany({ type: 'filter' });
+}
+
 
     async updateProfilePicUrl(whatsappJid, profilePicUrl) {
         try {
@@ -751,45 +779,40 @@ async sendStartMessage() {
     }
 
     async syncOutgoingMessage(whatsappMsg, text, topicId, sender) {
-        try {
-            if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId, true);
-            } else if (whatsappMsg.message?.imageMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId, true);
-            } else if (whatsappMsg.message?.videoMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId, true);
-            } else if (whatsappMsg.message?.audioMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId, true);
-            } else if (whatsappMsg.message?.documentMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId, true);
-            } else if (whatsappMsg.message?.stickerMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId, true);
-            } else if (whatsappMsg.message?.locationMessage) { 
-                await this.handleWhatsAppLocation(whatsappMsg, topicId, true);
-            } else if (whatsappMsg.message?.contactMessage) { 
-                await this.handleWhatsAppContact(whatsappMsg, topicId, true);
-            } else if (text) {
-                const messageText = `📤 You: ${text}`;
-                await this.sendSimpleMessage(topicId, messageText, sender);
+    try {
+        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId, true);
+        } else if (whatsappMsg.message?.imageMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId, true);
+        } else if (whatsappMsg.message?.videoMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId, true);
+        } else if (whatsappMsg.message?.audioMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId, true);
+        } else if (whatsappMsg.message?.documentMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId, true);
+        } else if (whatsappMsg.message?.stickerMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId, true);
+        } else if (whatsappMsg.message?.locationMessage) {
+            await this.handleWhatsAppLocation(whatsappMsg, topicId, true);
+        } else if (whatsappMsg.message?.contactMessage) {
+            await this.handleWhatsAppContact(whatsappMsg, topicId, true);
+        } else if (text) {
+            const textLower = text.toLowerCase();
+            for (const word of this.filters) {
+                if (textLower.startsWith(word)) {
+                    logger.info(`🛑 Outgoing message blocked by filter "${word}": ${text}`);
+                    return; // Skip sending
+                }
             }
-        } catch (error) {
-            logger.error('❌ Failed to sync outgoing message:', error);
-        }
-    }
 
-    queueMessageForReadReceipt(chatJid, messageKey) {
-        if (!config.get('telegram.features.readReceipts')) return;
-        
-        if (!this.messageQueue.has(chatJid)) {
-            this.messageQueue.set(chatJid, []);
+            const messageText = `📤 You: ${text}`;
+            await this.sendSimpleMessage(topicId, messageText, sender);
         }
-        
-        this.messageQueue.get(chatJid).push(messageKey);
-        
-        setTimeout(() => {
-            this.processReadReceipts(chatJid);
-        }, 2000);
+    } catch (error) {
+        logger.error('❌ Failed to sync outgoing message:', error);
     }
+}
+
 
     async processReadReceipts(chatJid) {
         try {
