@@ -554,7 +554,7 @@ async sendStartMessage() {
     try {
         const chatId = config.get('telegram.chatId');
 
-        // 🔧 Use zero-width space to avoid triggering bots
+        // Use zero-width space to avoid emoji triggers
         const testMsg = await this.telegramBot.sendMessage(chatId, '\u200B', {
             message_thread_id: topicId
         });
@@ -563,9 +563,11 @@ async sendStartMessage() {
         return true;
 
     } catch (error) {
+        logger.warn(`🔍 verifyTopicExists failed for topicId=${topicId}: ${error.message}`);
         return false;
     }
 }
+
 
 
     async recreateMissingTopics() {
