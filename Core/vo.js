@@ -1,212 +1,436 @@
-const fs = require('fs');
-const path = require('path');
-const { exec } = require('child_process');
-const { tmpdir } = require('os');
+const { readFileSync: read, unlinkSync: remove, writeFileSync: create } = require('fs')
+const path = require('path')
+const { exec } = require('child_process')
+const { tmpdir } = require('os')
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+
 
 class ViewOnceHandler {
     constructor(client, config = {}) {
-        this.client = client;
+        this.client = client
         this.config = {
-            autoForward: config.autoForward ?? false,
-            saveToTemp: config.saveToTemp ?? false,
+            autoForward: config.autoForward || true,
+            saveToTemp: config.saveToTemp || true,
             tempDir: config.tempDir || './temp',
-            enableInGroups: config.enableInGroups ?? true,
-            enableInPrivate: config.enableInPrivate ?? true,
-            forwardTarget: config.forwardTarget || null
-        };
-        this.ensureTempDir();
+            enableInGroups: config.enableInGroups || true,
+            enableInPrivate: config.enableInPrivate || true,
+            logActivity: config.logActivity || true,
+            ...config
+        }
+        
+        // Ensure temp directory exists
+        this.ensureTempDir()
     }
 
+    /**
+     * Ensure temp directory exists
+     */
     ensureTempDir() {
+        const fs = require('fs')
         if (!fs.existsSync(this.config.tempDir)) {
-            fs.mkdirSync(this.config.tempDir, { recursive: true });
+            fs.mkdirSync(this.config.tempDir, { recursive: true })
         }
     }
 
+    /**
+     * Check if message is a viewonce message
+     * @param {Object} msg - Message object
+     * @returns {boolean}
+     */
     isViewOnceMessage(msg) {
-        try {
-            const m = msg?.message;
-            if (!m) return false;
-            return (
-                m?.viewOnceMessage ||
-                m?.viewOnceMessageV2 ||
-                m?.viewOnceMessageV2Extension ||
-                Object.values(m).some(v => v?.viewOnce === true)
-            );
-        } catch {
-            return false;
-        }
+        return !!(msg?.message?.viewOnceMessage || 
+                 msg?.message?.viewOnceMessageV2 || 
+                 msg?.message?.viewOnceMessageV2Extension ||
+                 msg?.msg?.viewOnce ||
+                 (msg?.message && Object.keys(msg.message).some(key => 
+                     msg.message[key]?.viewOnce === true
+                 )))
     }
 
+    /**
+     * Extract viewonce message content
+     * @param {Object} msg - Message object
+     * @returns {Object|null}
+     */
     extractViewOnceContent(msg) {
-        let viewOnceMsg = msg?.message?.viewOnceMessage?.message ||
-                          msg?.message?.viewOnceMessageV2?.message ||
-                          msg?.message?.viewOnceMessageV2Extension?.message;
-
-        if (!viewOnceMsg) return null;
-
-        const types = ['imageMessage', 'videoMessage', 'audioMessage'];
-        for (const type of types) {
-            if (viewOnceMsg[type]) {
-                return {
-                    type: type.replace('Message', ''),
-                    content: viewOnceMsg[type],
-                    caption: viewOnceMsg[type]?.caption || '',
-                    mimetype: viewOnceMsg[type]?.mimetype || ''
-                };
+        try {
+            // Handle different viewonce message structures
+            let viewOnceMsg = null
+            
+            if (msg?.message?.viewOnceMessage) {
+                viewOnceMsg = msg.message.viewOnceMessage.message
+            } else if (msg?.message?.viewOnceMessageV2) {
+                viewOnceMsg = msg.message.viewOnceMessageV2.message
+            } else if (msg?.message?.viewOnceMessageV2Extension) {
+                viewOnceMsg = msg.message.viewOnceMessageV2Extension.message
+            } else if (msg?.msg?.viewOnce) {
+                viewOnceMsg = msg.message
             }
-        }
 
-        return null;
+            if (!viewOnceMsg) return null
+
+            // Determine media type and extract content
+            const mediaTypes = ['imageMessage', 'videoMessage', 'audioMessage']
+            
+            for (const mediaType of mediaTypes) {
+                if (viewOnceMsg[mediaType]) {
+                    return {
+                        type: mediaType.replace('Message', ''),
+                        content: viewOnceMsg[mediaType],
+                        caption: viewOnceMsg[mediaType].caption || '',
+                        mimetype: viewOnceMsg[mediaType].mimetype || '',
+                        originalMessage: msg
+                    }
+                }
+            }
+
+            return null
+        } catch (error) {
+            this.log('Error extracting viewonce content:', error)
+            return null
+        }
     }
 
+    /**
+     * Download viewonce media
+     * @param {Object} msg - Message object
+     * @returns {Promise<Buffer|null>}
+     */
     async downloadViewOnceMedia(msg) {
-        const viewOnceContent = this.extractViewOnceContent(msg);
-        if (!viewOnceContent) return null;
+        try {
+            const viewOnceContent = this.extractViewOnceContent(msg)
+            if (!viewOnceContent) return null
 
-        // Construct a fake message to make Baileys happy
-        const fakeMsg = {
-            key: msg.key,
-            message: {
-                [`${viewOnceContent.type}Message`]: viewOnceContent.content
+            // Download the media
+            const buffer = await downloadMediaMessage({
+    key: msg.key,
+    message: { [`${viewOnceContent.type}Message`]: viewOnceContent.content }
+}, 'buffer', {});
+
+            
+            if (this.config.logActivity) {
+                this.log(`Downloaded viewonce ${viewOnceContent.type} from ${msg.key.remoteJid}`)
             }
-        };
 
-        try {
-            const buffer = await downloadMediaMessage(fakeMsg, 'buffer', {});
             return {
-                ...viewOnceContent,
                 buffer,
+                type: viewOnceContent.type,
+                mimetype: viewOnceContent.mimetype,
+                caption: viewOnceContent.caption,
                 filename: this.generateFilename(viewOnceContent.type, viewOnceContent.mimetype)
-            };
+            }
         } catch (error) {
-            console.error('❌ Failed to download view-once media:', error);
-            return null;
+            this.log('Error downloading viewonce media:', error)
+            return null
         }
     }
 
+    /**
+     * Save viewonce media to temp directory
+     * @param {Object} mediaData - Media data from downloadViewOnceMedia
+     * @param {string} chatId - Chat ID for organization
+     * @returns {Promise<string|null>} - File path if saved successfully
+     */
+    async saveToTemp(mediaData, chatId) {
+        if (!this.config.saveToTemp || !mediaData) return null
+
+        try {
+            const sanitizedChatId = chatId.replace(/[^a-zA-Z0-9]/g, '_')
+            const timestamp = Date.now()
+            const filename = `viewonce_${sanitizedChatId}_${timestamp}_${mediaData.filename}`
+            const filePath = path.join(this.config.tempDir, filename)
+
+            create(filePath, mediaData.buffer)
+            
+            this.log(`Saved viewonce media to: ${filePath}`)
+            return filePath
+        } catch (error) {
+            this.log('Error saving to temp:', error)
+            return null
+        }
+    }
+
+    /**
+     * Forward viewonce media to same chat
+     * @param {Object} msg - Original message object
+     * @param {Object} mediaData - Media data from downloadViewOnceMedia
+     * @returns {Promise<boolean>}
+     */
     async forwardViewOnce(msg, mediaData) {
-        if (!this.config.autoForward || !mediaData) return false;
-
-        const target = this.config.forwardTarget || msg.key.remoteJid;
-        const isGroup = target.endsWith('@g.us');
-        if (isGroup && !this.config.enableInGroups) return false;
-        if (!isGroup && !this.config.enableInPrivate) return false;
-
-        const content = {};
-        if (mediaData.type === 'image') {
-            content.image = mediaData.buffer;
-            content.caption = mediaData.caption || '👁️ ViewOnce Image';
-        } else if (mediaData.type === 'video') {
-            content.video = mediaData.buffer;
-            content.caption = mediaData.caption || '🎥 ViewOnce Video';
-        } else if (mediaData.type === 'audio') {
-            content.audio = mediaData.buffer;
-            content.mimetype = mediaData.mimetype || 'audio/mp4';
-        }
+        if (!this.config.autoForward || !mediaData) return false
 
         try {
-            await this.client.sendMessage(target, content);
-            return true;
+            const chatId = msg.key.remoteJid
+            const isGroup = chatId.endsWith('@g.us')
+            
+            // Check if forwarding is enabled for this chat type
+            if (isGroup && !this.config.enableInGroups) return false
+            if (!isGroup && !this.config.enableInPrivate) return false
+
+            // Prepare message based on media type
+            let messageContent = {}
+            
+            switch (mediaData.type) {
+                case 'image':
+                    messageContent = {
+                        image: mediaData.buffer,
+                        caption: mediaData.caption || '👁️ ViewOnce Image'
+                    }
+                    break
+                    
+                case 'video':
+                    messageContent = {
+                        video: mediaData.buffer,
+                        caption: mediaData.caption || '👁️ ViewOnce Video'
+                    }
+                    break
+                    
+                case 'audio':
+                    messageContent = {
+                        audio: mediaData.buffer,
+                        mimetype: mediaData.mimetype || 'audio/mp4'
+                    }
+                    break
+                    
+                default:
+                    return false
+            }
+
+            // Send the forwarded message
+            await this.client.sendMessage(chatId, messageContent)
+            
+            this.log(`Forwarded viewonce ${mediaData.type} to ${chatId}`)
+            return true
         } catch (error) {
-            console.error('❌ Failed to forward view-once:', error);
-            return false;
+            this.log('Error forwarding viewonce:', error)
+            return false
         }
     }
 
-    async saveToTemp(mediaData) {
-        if (!this.config.saveToTemp || !mediaData) return null;
-
-        const filePath = path.join(this.config.tempDir, mediaData.filename);
-        try {
-            fs.writeFileSync(filePath, mediaData.buffer);
-            return filePath;
-        } catch (err) {
-            console.error('❌ Failed to save to temp:', err);
-            return null;
-        }
-    }
-
-    async processAudio(mediaData) {
-        const inputPath = path.join(tmpdir(), `input-${Date.now()}.ogg`);
-        const outputPath = path.join(tmpdir(), `output-${Date.now()}.mp3`);
-
-        fs.writeFileSync(inputPath, mediaData.buffer);
-
+    /**
+     * Process audio viewonce (convert if needed)
+     * @param {Buffer} audioBuffer - Audio buffer
+     * @param {string} mimetype - Original mimetype
+     * @returns {Promise<Buffer>}
+     */
+    async processAudioViewOnce(audioBuffer, mimetype) {
         return new Promise((resolve, reject) => {
-            exec(`ffmpeg -i "${inputPath}" -vn -ar 44100 -ac 2 -b:a 128k "${outputPath}"`, (err) => {
-                fs.unlinkSync(inputPath);
-                if (err) return reject(err);
-
-                const mp3Buffer = fs.readFileSync(outputPath);
-                fs.unlinkSync(outputPath);
-                resolve(mp3Buffer);
-            });
-        });
+            try {
+                if (/ogg/.test(mimetype)) {
+                    // Convert OGG to MP3
+                    const inputPath = path.join(tmpdir(), `input_${Date.now()}.ogg`)
+                    const outputPath = path.join(tmpdir(), `output_${Date.now()}.mp3`)
+                    
+                    create(inputPath, audioBuffer)
+                    
+                    exec(`ffmpeg -i ${inputPath} ${outputPath}`, (err) => {
+                        remove(inputPath)
+                        
+                        if (err) {
+                            reject(err)
+                            return
+                        }
+                        
+                        try {
+                            const convertedBuffer = read(outputPath)
+                            remove(outputPath)
+                            resolve(convertedBuffer)
+                        } catch (readErr) {
+                            reject(readErr)
+                        }
+                    })
+                } else {
+                    resolve(audioBuffer)
+                }
+            } catch (error) {
+                reject(error)
+            }
+        })
     }
 
+    /**
+     * Handle viewonce message completely
+     * @param {Object} msg - Message object
+     * @returns {Promise<Object|null>}
+     */
     async handleViewOnceMessage(msg) {
         try {
-            if (!this.isViewOnceMessage(msg)) return null;
+            if (!this.isViewOnceMessage(msg)) return null
 
-            const mediaData = await this.downloadViewOnceMedia(msg);
-            if (!mediaData) return null;
+            const sender = msg.key.participant || msg.key.remoteJid
+            const chatId = msg.key.remoteJid
+            const isOwner = this.isOwner ? this.isOwner(sender) : false
 
+            // Skip if it's from owner (configurable)
+            if (isOwner && this.config.skipOwner) return null
+
+            // Download the media
+            const mediaData = await this.downloadViewOnceMedia(msg)
+            if (!mediaData) return null
+
+            // Process audio if needed
             if (mediaData.type === 'audio') {
-                mediaData.buffer = await this.processAudio(mediaData);
+                try {
+                    mediaData.buffer = await this.processAudioViewOnce(mediaData.buffer, mediaData.mimetype)
+                } catch (audioError) {
+                    this.log('Audio processing failed, using original:', audioError)
+                }
             }
 
-            const savedPath = await this.saveToTemp(mediaData);
-            await this.forwardViewOnce(msg, mediaData);
+            // Save to temp if enabled
+            let savedPath = null
+            if (this.config.saveToTemp) {
+                savedPath = await this.saveToTemp(mediaData, chatId)
+            }
+
+            // Forward if enabled
+            let forwarded = false
+            if (this.config.autoForward) {
+                forwarded = await this.forwardViewOnce(msg, mediaData)
+            }
 
             return {
                 success: true,
                 mediaData,
-                savedPath
-            };
+                savedPath,
+                forwarded,
+                sender,
+                chatId,
+                timestamp: Date.now()
+            }
         } catch (error) {
-            console.error('❌ Error handling view-once message:', error);
-            return { success: false, error };
+            this.log('Error handling viewonce message:', error)
+            return {
+                success: false,
+                error: error.message
+            }
         }
     }
 
+    /**
+     * Generate filename based on type and mimetype
+     * @param {string} type - Media type
+     * @param {string} mimetype - MIME type
+     * @returns {string}
+     */
     generateFilename(type, mimetype) {
-        const extMap = {
+        const timestamp = Date.now()
+        const extensions = {
             'image/jpeg': 'jpg',
             'image/png': 'png',
             'image/webp': 'webp',
             'video/mp4': 'mp4',
+            'video/3gpp': '3gp',
+            'audio/mp4': 'mp3',
             'audio/ogg': 'ogg',
-            'audio/mpeg': 'mp3',
-            'audio/mp4': 'mp3'
-        };
-        const ext = extMap[mimetype] || type;
-        return `vo-${Date.now()}.${ext}`;
+            'audio/mpeg': 'mp3'
+        }
+        
+        const ext = extensions[mimetype] || type
+        return `${type}_${timestamp}.${ext}`
     }
 
-    updateConfig(config) {
-        this.config = { ...this.config, ...config };
+    /**
+     * Set owner checker function
+     * @param {Function} ownerChecker - Function to check if user is owner
+     */
+    setOwnerChecker(ownerChecker) {
+        this.isOwner = ownerChecker
     }
 
+    /**
+     * Update configuration
+     * @param {Object} newConfig - New configuration options
+     */
+    updateConfig(newConfig) {
+        this.config = { ...this.config, ...newConfig }
+    }
+
+    /**
+     * Get current configuration
+     * @returns {Object}
+     */
+    getConfig() {
+        return { ...this.config }
+    }
+
+    /**
+     * Clean temp directory
+     * @param {number} maxAge - Maximum age in milliseconds (default: 1 hour)
+     */
+    cleanTempDirectory(maxAge = 3600000) {
+        try {
+            const fs = require('fs')
+            const files = fs.readdirSync(this.config.tempDir)
+            const now = Date.now()
+
+            files.forEach(file => {
+                const filePath = path.join(this.config.tempDir, file)
+                const stats = fs.statSync(filePath)
+                
+                if (now - stats.mtime.getTime() > maxAge) {
+                    fs.unlinkSync(filePath)
+                    this.log(`Cleaned old temp file: ${file}`)
+                }
+            })
+        } catch (error) {
+            this.log('Error cleaning temp directory:', error)
+        }
+    }
+
+    /**
+     * Log messages (can be overridden)
+     * @param {...any} args - Arguments to log
+     */
+    log(...args) {
+        if (this.config.logActivity) {
+            console.log('[ViewOnce]', ...args)
+        }
+    }
+
+    /**
+     * Get statistics
+     * @returns {Object}
+     */
     getStats() {
+        // This would need to be implemented with persistent storage
+        // For now, return basic info
         return {
-            ...this.config,
-            tempDirExists: fs.existsSync(this.config.tempDir)
-        };
+            tempDir: this.config.tempDir,
+            tempDirExists: require('fs').existsSync(this.config.tempDir),
+            config: this.getConfig()
+        }
     }
 }
 
+// Export the class and a helper function
 module.exports = {
     ViewOnceHandler,
-    createViewOnceHandler: (client, config) => new ViewOnceHandler(client, config),
-    setupViewOnceHandler: (client, config) => {
-        const handler = new ViewOnceHandler(client, config);
+    
+    /**
+     * Create and configure a ViewOnce handler
+     * @param {Object} client - WhatsApp client instance
+     * @param {Object} config - Configuration options
+     * @returns {ViewOnceHandler}
+     */
+    createViewOnceHandler: (client, config = {}) => {
+        return new ViewOnceHandler(client, config)
+    },
+
+    /**
+     * Quick setup for basic viewonce handling
+     * @param {Object} client - WhatsApp client instance
+     * @param {Object} options - Basic options
+     * @returns {Function} - Message handler function
+     */
+    setupViewOnceHandler: (client, options = {}) => {
+        const handler = new ViewOnceHandler(client, options)
+        
         return async (msg) => {
             if (handler.isViewOnceMessage(msg)) {
-                return await handler.handleViewOnceMessage(msg);
+                return await handler.handleViewOnceMessage(msg)
             }
-            return null;
-        };
+            return null
+        }
     }
-};
+}
