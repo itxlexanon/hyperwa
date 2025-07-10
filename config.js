@@ -1,37 +1,45 @@
-
-
 class Config {
-constructor() {
-    this.defaultConfig = {
-        bot: {
-            name: 'HyperWa',
-            company: 'Dawium Technologies',
-            prefix: '.',
-            version: '2.0.0',
-            owner: '923417033005@s.whatsapp.net',
-            clearAuthOnStart: false
-        },
-          auth: {
-                useMongoAuth: true, //  set to false for file-based auth, ture mongodb auth base
-     },
-        admins: [
-            '923417033005',  // Just the number part, no "@s.whatsapp.net"
-            '923334445555'
-        ],  
+    constructor() {
+        this.defaultConfig = {
+            bot: {
+                name: 'HyperWa',
+                company: 'Dawium Technologies',
+                prefix: '.',
+                version: '2.0.0',
+                owner: '923417033005@s.whatsapp.net',
+                clearAuthOnStart: false
+            },
+            auth: {
+                useMongoAuth: true, // set to false for file-based auth, ture mongodb auth base
+            },
+            admins: [
+                '923417033005',  // Just the number part, no "@s.whatsapp.net"
+                '923334445555'
+            ],  
 
-        // Feature toggles and configurations
-        features: {
-            mode: 'public', // Bot mode: 'public' or 'private'
-            autoViewStatus: true, // Automatically view WhatsApp status updates
-            customModules: true, // Enable loading of custom modules
-            rateLimiting: true, // Enable command rate limiting
-            telegramBridge: true, // Enable Telegram bridge integration
-            smartProcessing: true, // Enable smart message processing
-            editMessages: true, // Allow editing of sent messages
-            autoReact: true, // Auto react to commands
-            respondToUnknownCommands: false,  // Bot send error message on wrong commands
-            sendPermissionError: false      // bot will send error message on comnd which are not allowed to users
-        },
+            // Feature toggles and configurations
+            features: {
+                mode: 'public', // Bot mode: 'public' or 'private'
+                autoViewStatus: true, // Automatically view WhatsApp status updates
+                customModules: true, // Enable loading of custom modules
+                rateLimiting: true, // Enable command rate limiting
+                telegramBridge: true, // Enable Telegram bridge integration
+                smartProcessing: true, // Enable smart message processing
+                editMessages: true, // Allow editing of sent messages
+                autoReact: true, // Auto react to commands
+                respondToUnknownCommands: false,  // Bot send error message on wrong commands
+                sendPermissionError: false,       // bot will send error message on comnd which are not allowed to users
+                // Add the viewOnce configuration here:
+                viewOnce: {
+                    autoForward: true,    // Automatically forward view-once media
+                    saveToTemp: true,     // Save to a temporary directory
+                    tempDir: './temp',    // Directory for temporary files
+                    enableInGroups: true, // Enable view-once handling in groups
+                    enableInPrivate: true, // Enable view-once handling in private chats
+                    logActivity: true,    // Log view-once activity
+                    skipOwner: false      // Skip handling view-once messages from the owner
+                }
+            },
             mongo: {
                 uri: 'mongodb+srv://itxelijah07:ivp8FYGsbVfjQOkj@cluster0.wh25x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
                 dbName: 'HyperWA'
