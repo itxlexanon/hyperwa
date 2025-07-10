@@ -1,7 +1,8 @@
 const logger = require('./logger');
 const config = require('../config');
 const rateLimiter = require('./rate-limiter');
-const VO = require('./vo'); // Import the whole module
+const { ViewOnceHandler } = require('./vo');
+
 
 
 class MessageHandler {
