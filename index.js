@@ -36,7 +36,9 @@ async function main() {
         });
 
     } catch (error) {
-        logger.error('💥 Failed to start HyperWa Userbot:', error);
+       logger.error(`💥 Failed to start HyperWa Userbot: ${error?.message || error}`);
+console.error(error); // Optional: show full stack trace in console
+
         process.exit(1);
     }
 }
