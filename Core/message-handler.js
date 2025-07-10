@@ -20,8 +20,8 @@ class MessageHandler {
     }
 
     registerMessageHook(hook, handler) {
-        if (!hook || typeof hook !== 'string') {
-            logger.error('Invalid hook name:', hook);
+        if (!hook || typeof hook !== 'string' || hook === 'all') {
+            logger.error(`Invalid hook name: ${hook}. Hook names cannot be 'all' or empty.`);
             return;
         }
         if (typeof handler !== 'function') {
@@ -43,14 +43,18 @@ class MessageHandler {
             try {
                 await this.processMessage(msg);
             } catch (error) {
-                logger.error('Error processing message:', error);
+                logger.error('Error processing message:', {
+                    error: error.message,
+                    stack: error.stack,
+                    messageId: msg?.key?.id
+                });
             }
         }
     }
 
     async processMessage(msg) {
-        if (!msg || !msg.key) {
-            logger.warn('Invalid message received');
+        if (!msg || !msg.key || !msg.key.remoteJid) {
+            logger.warn('Invalid message received: missing key or remoteJid');
             return;
         }
 
@@ -68,12 +72,13 @@ class MessageHandler {
                     continue;
                 }
                 await handler(msg, context);
-                logger.debug(`Executed hook: ${hook}`);
+                logger.debug(`Executed hook: ${hook} for message ${msg.key.id}`);
             } catch (error) {
                 logger.error(`Error in message hook ${hook}: ${error.message}`, {
                     stack: error.stack,
                     messageId: msg.key.id,
-                    hook
+                    hook,
+                    message: JSON.stringify(msg, null, 2)
                 });
             }
         }
@@ -83,8 +88,11 @@ class MessageHandler {
         }
 
         const text = this.extractText(msg);
+        if (typeof text !== 'string') {
+            logger.warn(`Text is not a string for message ${msg.key.id}:`, { text });
+        }
         const prefix = config.get('bot.prefix');
-        const isCommand = text && text.startsWith(prefix) && !this.hasMedia(msg);
+        const isCommand = typeof text === 'string' && text.startsWith(prefix) && !this.hasMedia(msg);
         
         if (isCommand) {
             logger.debug(`Processing command: ${text}`);
@@ -239,13 +247,15 @@ class MessageHandler {
     }
 
     extractText(msg) {
-        return msg.message?.conversation ||
-               msg.message?.extendedTextMessage?.text ||
-               msg.message?.imageMessage?.caption ||
-               msg.message?.videoMessage?.caption ||
-               msg.message?.documentMessage?.caption ||
-               msg.message?.audioMessage?.caption ||
-               '';
+        const text =
+            msg.message?.conversation ||
+            msg.message?.extendedTextMessage?.text ||
+            msg.message?.imageMessage?.caption ||
+            msg.message?.videoMessage?.caption ||
+            msg.message?.documentMessage?.caption ||
+            msg.message?.audioMessage?.caption ||
+            '';
+        return typeof text === 'string' ? text : '';
     }
 }
 
