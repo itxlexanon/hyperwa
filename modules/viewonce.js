@@ -1,62 +1,28 @@
-const { ViewOnceHandler } = require('../Core/vo');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const { tmpdir } = require('os');
 
 module.exports = {
-    name: 'viewonce',
+    name: 'rvo',
     metadata: {
         version: '1.0.0',
-        description: 'Handle and control view-once media (auto forwarding, reveal)',
-        author: 'Dawium AI',
+        description: 'Download view-once media from a replied message',
+        author: 'You',
         category: 'Media'
     },
     commands: [
         {
-            name: 'viewonce',
-            description: 'Toggle view-once forwarding (on/off)',
-            usage: '.viewonce on|off',
+            name: 'rvo',
+            description: 'Download and show replied view-once media',
+            usage: '.rvo (in reply)',
             permissions: 'owner',
             async execute(msg, params, { bot, sender }) {
-                const arg = (params[0] || '').toLowerCase();
-                const handler = bot.messageHandler.viewOnceHandler;
-
-                if (!handler) {
-                    return bot.sendMessage(sender, { text: '❌ ViewOnce handler not initialized.' });
-                }
-
-                if (arg === 'on') {
-                    handler.updateConfig({
-                        autoForward: true,
-                        forwardTarget: bot.sock.user.id
-                    });
-                    return bot.sendMessage(sender, { text: '✅ ViewOnce forwarding enabled to owner.' });
-                }
-
-                if (arg === 'off') {
-                    handler.updateConfig({ autoForward: false });
-                    return bot.sendMessage(sender, { text: '⛔ ViewOnce forwarding disabled.' });
-                }
-
-                return bot.sendMessage(sender, {
-                    text: '❓ Usage:\n• `.viewonce on`\n• `.viewonce off`'
-                });
-            }
-        },
-        {
-            name: 'v',
-            description: 'Reveal view-once message (must reply to message)',
-            usage: '.v (in reply to a view-once message)',
-            permissions: 'owner',
-            async execute(msg, params, { bot, sender }) {
-                const handler = bot.messageHandler.viewOnceHandler;
-
-                if (!handler) {
-                    return bot.sendMessage(sender, { text: '❌ ViewOnce handler not initialized.' });
-                }
-
                 const ctx = msg.message?.extendedTextMessage?.contextInfo;
                 const quoted = ctx?.quotedMessage;
-                const quotedParticipant = ctx?.participant;
-                const quotedStanzaId = ctx?.stanzaId;
-                const quotedJid = msg.key.remoteJid;
+                const stanzaId = ctx?.stanzaId;
+                const participant = ctx?.participant;
+                const remoteJid = msg.key.remoteJid;
 
                 if (!quoted) {
                     return bot.sendMessage(sender, { text: '⚠️ Please reply to a ViewOnce message.' });
@@ -64,16 +30,22 @@ module.exports = {
 
                 const fakeMsg = {
                     key: {
-                        remoteJid: quotedJid,
+                        remoteJid,
                         fromMe: false,
-                        id: quotedStanzaId,
-                        participant: quotedParticipant
+                        id: stanzaId,
+                        participant
                     },
                     message: quoted
                 };
 
+                const { ViewOnceHandler } = require('../Core/vo');
+                const handler = new ViewOnceHandler(bot.sock, {
+                    autoForward: false,
+                    saveToTemp: false
+                });
+
                 if (!handler.isViewOnceMessage(fakeMsg)) {
-                    return bot.sendMessage(sender, { text: '❌ That is not a ViewOnce message.' });
+                    return bot.sendMessage(sender, { text: '❌ Not a ViewOnce message.' });
                 }
 
                 const result = await handler.handleViewOnceMessage(fakeMsg);
@@ -81,23 +53,46 @@ module.exports = {
                     return bot.sendMessage(sender, { text: '⚠️ Failed to extract view-once media.' });
                 }
 
-                const content = {};
-                switch (result.mediaData.type) {
-                    case 'image':
-                        content.image = result.mediaData.buffer;
-                        content.caption = '👁️ ViewOnce Revealed';
-                        break;
-                    case 'video':
-                        content.video = result.mediaData.buffer;
-                        content.caption = '🎥 ViewOnce Revealed';
-                        break;
-                    case 'audio':
-                        content.audio = result.mediaData.buffer;
-                        content.mimetype = result.mediaData.mimetype || 'audio/mp4';
-                        break;
+                const type = result.mediaData.type;
+                const buffer = result.mediaData.buffer;
+                const caption = result.mediaData.caption || '👁️ ViewOnce Media';
+
+                // Audio conversion
+                if (type === 'audio') {
+                    const inputPath = path.join(tmpdir(), `vo-${Date.now()}.ogg`);
+                    const outputPath = path.join(tmpdir(), `vo-${Date.now()}.mp3`);
+
+                    fs.writeFileSync(inputPath, buffer);
+
+                    exec(`ffmpeg -i ${inputPath} -vn -ar 44100 -ac 2 -b:a 128k ${outputPath}`, async (err) => {
+                        fs.unlinkSync(inputPath);
+                        if (err) {
+                            return bot.sendMessage(sender, { text: '❌ Audio conversion failed.' });
+                        }
+
+                        const converted = fs.readFileSync(outputPath);
+                        fs.unlinkSync(outputPath);
+
+                        await bot.sendMessage(sender, {
+                            audio: converted,
+                            mimetype: 'audio/mp4'
+                        });
+                    });
                 }
 
-                await bot.sendMessage(sender, content);
+                // Image / video
+                else {
+                    const content = {};
+                    if (type === 'image') {
+                        content.image = buffer;
+                        content.caption = caption;
+                    } else if (type === 'video') {
+                        content.video = buffer;
+                        content.caption = caption;
+                    }
+
+                    await bot.sendMessage(sender, content);
+                }
             }
         }
     ]
