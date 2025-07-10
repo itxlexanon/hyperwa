@@ -1765,9 +1765,10 @@ async sendStartMessage() {
     const chatId = config.get('telegram.chatId');
 
     try {
-        return (await this.telegramBot.sendMessage(chatId, text, {
+        const sentMessage = await this.telegramBot.sendMessage(chatId, text, {
             message_thread_id: topicId
-        })).message_id;
+        });
+        return sentMessage.message_id;
 
     } catch (error) {
         const desc = error.response?.data?.description || error.message;
@@ -1780,21 +1781,31 @@ async sendStartMessage() {
             const jid = jidEntry?.[0];
 
             if (jid) {
+                // Clean mapping
                 this.chatMappings.delete(jid);
                 this.profilePicCache.delete(jid);
                 await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
 
+                // Recreate topic
                 const dummyMsg = {
                     key: {
                         remoteJid: jid,
                         participant: jid.endsWith('@g.us') ? jid : jid
                     }
                 };
-
                 const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
 
                 if (newTopicId) {
-                    return await this.sendSimpleMessage(newTopicId, text, sender);
+                    // 🔁 RETRY original message
+                    try {
+                        const retryMessage = await this.telegramBot.sendMessage(chatId, text, {
+                            message_thread_id: newTopicId
+                        });
+                        return retryMessage.message_id;
+                    } catch (retryErr) {
+                        logger.error('❌ Retry failed after topic recreation:', retryErr);
+                        return null;
+                    }
                 }
             } else {
                 logger.warn(`⚠️ Could not find WhatsApp JID for topic ID ${topicId}`);
@@ -1804,6 +1815,8 @@ async sendStartMessage() {
         logger.error('❌ Failed to send message to Telegram:', desc);
         return null;
     }
+}
+
 }
 
 
