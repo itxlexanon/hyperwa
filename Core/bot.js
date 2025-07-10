@@ -50,7 +50,7 @@ class HyperWaBot {
             }
         }
 
-        // *IMPORTANT*: Initialize MessageHandler BEFORE starting WhatsApp connection,
+        // IMPORTANT: Initialize MessageHandler BEFORE starting WhatsApp connection,
         // but pass null for handleViewOnce initially.
         this.messageHandler = new MessageHandler(this, null); // Pass null for handleViewOnce initially
 
@@ -93,7 +93,7 @@ class HyperWaBot {
                 browser: ['HyperWa', 'Chrome', '3.0'],
             });
 
-            // *IMPORTANT*: Setup the view once handler now that 'this.sock' is available
+            // IMPORTANT: Setup the view once handler now that 'this.sock' is available
             this.handleViewOnce = setupViewOnceHandler(this.sock, config.get('features.viewOnce', {
                 autoForward: true,
                 saveToTemp: true,
@@ -105,7 +105,7 @@ class HyperWaBot {
             }));
             logger.info('✅ ViewOnce handler setup!');
 
-            // *IMPORTANT*: Pass the handleViewOnce function to the message handler NOW
+            // IMPORTANT: Pass the handleViewOnce function to the message handler NOW
             this.messageHandler.setViewOnceHandler(this.handleViewOnce);
 
 
