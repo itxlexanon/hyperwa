@@ -8,14 +8,14 @@ constructor() {
             company: 'Dawium Technologies',
             prefix: '.',
             version: '2.0.0',
-            owner: '923298784489@s.whatsapp.net',
+            owner: '923417033005@s.whatsapp.net',
             clearAuthOnStart: false
         },
           auth: {
                 useMongoAuth: true, //  set to false for file-based auth, ture mongodb auth base
      },
         admins: [
-            '923001112222',  // Just the number part, no "@s.whatsapp.net"
+            '923417033005',  // Just the number part, no "@s.whatsapp.net"
             '923334445555'
         ],  
 
