@@ -39,7 +39,7 @@ class ViewOnceModule {
                 description: 'Manually reveal a ViewOnce message',
                 usage: '.rvo (reply to viewonce)',
                 permissions: 'public',
-                autoWrap: false, // Added to bypass smartErrorRespond
+                autoWrap: false,
                 execute: this.handleRvoCommand.bind(this)
             },
             {
@@ -47,7 +47,7 @@ class ViewOnceModule {
                 description: 'Toggle ViewOnce auto-forward',
                 usage: '.viewonce [on/off]',
                 permissions: 'admin',
-                autoWrap: false, // Added
+                autoWrap: false,
                 execute: this.handleViewOnceToggle.bind(this)
             },
             {
@@ -55,7 +55,7 @@ class ViewOnceModule {
                 description: 'Show ViewOnce module statistics',
                 usage: '.vostats',
                 permissions: 'admin',
-                autoWrap: false, // Added
+                autoWrap: false,
                 execute: this.handleStatsCommand.bind(this)
             }
         ];
@@ -79,13 +79,14 @@ class ViewOnceModule {
         }
     }
 
-    // Rest of the methods remain unchanged
     async destroy() { this.log('ViewOnce module destroyed'); }
+
     isViewOnceMessage(msg) {
         if (!msg || !msg.message) return false;
         const message = msg.message;
         return !!(message.imageMessage?.viewOnce || message.videoMessage?.viewOnce || message.audioMessage?.viewOnce);
     }
+
     getViewOnceType(msg) {
         if (!msg || !msg.message) return null;
         const message = msg.message;
@@ -94,6 +95,7 @@ class ViewOnceModule {
         if (message.audioMessage?.viewOnce) return 'audio';
         return null;
     }
+
     async downloadViewOnceMedia(msg) {
         try {
             const type = this.getViewOnceType(msg);
@@ -114,6 +116,7 @@ class ViewOnceModule {
             return null;
         }
     }
+
     async saveToTemp(mediaData, chatId) {
         try {
             const filename = `viewonce_${Date.now()}_${mediaData.filename}`;
@@ -127,6 +130,7 @@ class ViewOnceModule {
             return null;
         }
     }
+
     async forwardViewOnce(originalMsg, mediaData) {
         try {
             const chatId = originalMsg.key.remoteJid;
@@ -160,6 +164,7 @@ class ViewOnceModule {
             return false;
         }
     }
+
     async processAudioViewOnce(audioBuffer, mimetype) {
         return new Promise((resolve, reject) => {
             try {
@@ -184,18 +189,31 @@ class ViewOnceModule {
             }
         });
     }
+
     async detectViewOnce(msg, context) {
+        if (!msg || !msg.message || !msg.key) {
+            this.log('Invalid message in detectViewOnce');
+            return;
+        }
         if (!this.isViewOnceMessage(msg)) return;
         const sender = msg.key.participant || msg.key.remoteJid;
         const isOwner = context.isOwner || false;
         if (isOwner && this.config.skipOwner) return;
+        this.log(`Detected ViewOnce message from ${sender}`);
         await this.processViewOnce(msg, context);
     }
+
     async processViewOnce(msg, context) {
         try {
-            if (!this.isViewOnceMessage(msg)) return;
+            if (!msg || !msg.message || !this.isViewOnceMessage(msg)) {
+                this.log('Invalid message in processViewOnce');
+                return;
+            }
             const mediaData = await this.downloadViewOnceMedia(msg);
-            if (!mediaData) return;
+            if (!mediaData) {
+                this.log('Failed to download ViewOnce media');
+                return;
+            }
             if (mediaData.type === 'audio') {
                 try {
                     mediaData.buffer = await this.processAudioViewOnce(mediaData.buffer, mediaData.mimetype);
@@ -221,6 +239,7 @@ class ViewOnceModule {
             return { success: false, error: error.message };
         }
     }
+
     async handleRvoCommand(msg, params, context) {
         if (!msg.quoted) {
             return context.bot.sendMessage(context.sender, {
@@ -255,6 +274,7 @@ class ViewOnceModule {
             });
         }
     }
+
     async handleViewOnceToggle(msg, params, context) {
         if (params.length === 0) {
             const status = this.config.autoForward ? 'ON' : 'OFF';
@@ -273,6 +293,7 @@ class ViewOnceModule {
             text: `✅ ViewOnce auto-forward has been turned **${action.toUpperCase()}**`
         });
     }
+
     async handleStatsCommand(msg, params, context) {
         const uptime = Date.now() - this.stats.startTime;
         const uptimeStr = this.formatUptime(uptime);
@@ -289,6 +310,7 @@ class ViewOnceModule {
             `⏰ **Uptime:** ${uptimeStr}`;
         await context.bot.sendMessage(context.sender, { text: statsText });
     }
+
     formatUptime(ms) {
         const seconds = Math.floor(ms / 1000);
         const minutes = Math.floor(seconds / 60);
@@ -299,6 +321,7 @@ class ViewOnceModule {
         if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
         return `${seconds}s`;
     }
+
     generateFilename(type, mimetype) {
         const timestamp = Date.now();
         const extensions = {
@@ -309,6 +332,7 @@ class ViewOnceModule {
         const ext = extensions[mimetype] || type;
         return `${type}_${timestamp}.${ext}`;
     }
+
     cleanTempDirectory(maxAge = this.config.maxTempAge) {
         try {
             const fs = require('fs');
@@ -334,6 +358,7 @@ class ViewOnceModule {
             this.logError('Error cleaning temp directory:', error);
         }
     }
+
     getStats() {
         return {
             ...this.stats,
@@ -342,15 +367,18 @@ class ViewOnceModule {
             config: { ...this.config }
         };
     }
+
     updateConfig(newConfig) {
         this.config = { ...this.config, ...newConfig };
         this.log('Configuration updated:', newConfig);
     }
+
     log(...args) {
         if (this.config.logActivity) {
             logger.debug('[ViewOnce]', ...args);
         }
     }
+
     logError(...args) {
         logger.error('[ViewOnce]', ...args);
     }
