@@ -550,22 +550,7 @@ async sendStartMessage() {
         }
     }
 
-    async verifyTopicExists(topicId) {
-        try {
-            const chatId = config.get('telegram.chatId');
-            
-            const testMsg = await this.telegramBot.sendMessage(chatId, '🔍', {
-                message_thread_id: topicId
-            });
-            
-            await this.telegramBot.deleteMessage(chatId, testMsg.message_id);
-            return true;
-            
-        } catch (error) {
-            return false;
-        }
-    }
-
+    
     async recreateMissingTopics() {
         try {
             logger.info('🔄 Checking for missing topics...');
@@ -1860,7 +1845,6 @@ async sendStartMessage() {
             `🚀 Ready to bridge messages!`);
 
         await this.syncContacts();
-        await this.recreateMissingTopics();
     }
 
     async setupWhatsAppHandlers() {
