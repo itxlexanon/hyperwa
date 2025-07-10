@@ -1,4 +1,3 @@
-
 const logger = require('../Core/logger');
 
 class TelegramCommands {
@@ -31,6 +30,15 @@ class TelegramCommands {
                     break;
                 case '/searchcontact':
                     await this.handleSearchContact(msg.chat.id, args);
+                    break;
+                case '/addfilter':
+                    await this.handleAddFilter(msg.chat.id, args);
+                    break;
+                case '/filters':
+                    await this.handleListFilters(msg.chat.id);
+                    break;
+                case '/clearfilters':
+                    await this.handleClearFilters(msg.chat.id);
                     break;
                 default:
                     await this.handleMenu(msg.chat.id);
@@ -108,7 +116,6 @@ class TelegramCommands {
         }
     }
 
-
     async handleSearchContact(chatId, args) {
         if (args.length === 0) {
             return this.bridge.telegramBot.sendMessage(chatId,
@@ -132,13 +139,40 @@ class TelegramCommands {
         await this.bridge.telegramBot.sendMessage(chatId, `🔍 *Search Results*\n\n${result}`, { parse_mode: 'Markdown' });
     }
 
+    async handleAddFilter(chatId, args) {
+        if (args.length === 0) {
+            return this.bridge.telegramBot.sendMessage(chatId, '❌ Usage: /addfilter <word>', { parse_mode: 'Markdown' });
+        }
+
+        const word = args.join(' ').toLowerCase();
+        await this.bridge.addFilter(word);
+        await this.bridge.telegramBot.sendMessage(chatId, `✅ Added filter: \`${word}\``, { parse_mode: 'Markdown' });
+    }
+
+    async handleListFilters(chatId) {
+        if (!this.bridge.filters?.size) {
+            return this.bridge.telegramBot.sendMessage(chatId, '⚠️ No filters set.', { parse_mode: 'Markdown' });
+        }
+
+        const list = [...this.bridge.filters].map(w => `- \`${w}\``).join('\n');
+        await this.bridge.telegramBot.sendMessage(chatId, `🛑 *Current Filters:*\n\n${list}`, { parse_mode: 'Markdown' });
+    }
+
+    async handleClearFilters(chatId) {
+        await this.bridge.clearFilters();
+        await this.bridge.telegramBot.sendMessage(chatId, '🧹 All filters cleared.', { parse_mode: 'Markdown' });
+    }
+
     async handleMenu(chatId) {
         const message = `ℹ️ *Available Commands*\n\n` +
             `/start - Show bot info\n` +
             `/status - Show bridge status\n` +
             `/send <number> <msg> - Send WhatsApp message\n` +
             `/sync - Sync WhatsApp contacts\n` +
-            `/searchcontact <name/phone> - Search contacts`;
+            `/searchcontact <name/phone> - Search contacts\n` +
+            `/addfilter <word> - Block WA messages starting with it\n` +
+            `/filters - Show current filters\n` +
+            `/clearfilters - Remove all filters`;
         await this.bridge.telegramBot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
 
@@ -149,7 +183,10 @@ class TelegramCommands {
                 { command: 'status', description: 'Show bridge status' },
                 { command: 'send', description: 'Send WhatsApp message' },
                 { command: 'sync', description: 'Sync WhatsApp contacts' },
-                { command: 'searchcontact', description: 'Search WhatsApp contacts' }
+                { command: 'searchcontact', description: 'Search WhatsApp contacts' },
+                { command: 'addfilter', description: 'Add blocked word' },
+                { command: 'filters', description: 'Show blocked words' },
+                { command: 'clearfilters', description: 'Clear all filters' }
             ]);
             logger.info('✅ Telegram bot commands registered');
         } catch (error) {
