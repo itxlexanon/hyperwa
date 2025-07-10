@@ -25,28 +25,29 @@ class HyperWaBot {
     }
 
     async initialize() {
-        logger.info('🔧 Initializing HyperWa Userbot...');
-        
-        // Connect to the database
+    logger.info('🔧 Initializing HyperWa Userbot...');
+    
+    // Connect to the database
+    try {
+        this.db = await connectDb();
+        logger.info('✅ Database connected successfully!');
+    } catch (error) {
+        logger.error('❌ Failed to connect to database:', error);
+        process.exit(1);
+    }
+
+    // Initialize Telegram bridge first (for QR code sending)
+    if (config.get('telegram.enabled')) {
         try {
-            this.db = await connectDb();
-            logger.info('✅ Database connected successfully!');
+            this.telegramBridge = new TelegramBridge(this);
+            await this.telegramBridge.initialize();
+            logger.info('✅ Telegram bridge initialized');
+            // Add this line:
+            await this.telegramBridge.sendStartMessage();
         } catch (error) {
-            logger.error('❌ Failed to connect to database:', error);
-            process.exit(1);
+            logger.error('❌ Failed to initialize Telegram bridge:', error);
         }
-
-        // Initialize Telegram bridge first (for QR code sending)
-        if (config.get('telegram.enabled')) {
-            try {
-                this.telegramBridge = new TelegramBridge(this);
-                await this.telegramBridge.initialize();
-                logger.info('✅ Telegram bridge initialized');
-            } catch (error) {
-                logger.error('❌ Failed to initialize Telegram bridge:', error);
-            }
-        }
-
+    }
         // Load modules using the ModuleLoader
         await this.moduleLoader.loadModules();
         
@@ -114,20 +115,40 @@ class HyperWaBot {
         this.sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
 
-            if (qr) {
-                logger.info('📱 Scan QR code with WhatsApp:');
-                qrcode.generate(qr, { small: true });
-
-                // Send QR code to Telegram if bridge is enabled
-                if (this.telegramBridge && config.get('telegram.enabled') && config.get('telegram.botToken')) {
-                    try {
-                        await this.telegramBridge.sendQRCode(qr);
-                        logger.info('✅ QR code sent to Telegram');
-                    } catch (error) {
-                        logger.error('❌ Failed to send QR code to Telegram:', error);
-                    }
+// In the connection.update handler:
+if (qr) {
+    logger.info('📱 WhatsApp QR code generated');
+    
+    // Always show in terminal as fallback
+    qrcode.generate(qr, { small: true });
+    
+    // Enhanced Telegram QR sending with retries
+    if (this.telegramBridge) {
+        let attempts = 0;
+        const maxAttempts = 3;
+        const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+        
+        while (attempts < maxAttempts) {
+            attempts++;
+            try {
+                await delay(500 * attempts); // Progressive delay
+                
+                logger.debug(`Attempt ${attempts} to send QR via Telegram...`);
+                const success = await this.telegramBridge.sendQRCode(qr);
+                
+                if (success) {
+                    logger.info('✅ QR code successfully sent to Telegram');
+                    break;
+                }
+            } catch (error) {
+                logger.error(`Attempt ${attempts} failed:`, error.message);
+                if (attempts === maxAttempts) {
+                    logger.error('❌ All attempts to send QR via Telegram failed');
                 }
             }
+        }
+    }
+}
 
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode || 0;
