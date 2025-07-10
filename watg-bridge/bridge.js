@@ -595,61 +595,59 @@ async sendStartMessage() {
     }
 
     async syncMessage(whatsappMsg, text) {
-    const sender = whatsappMsg.key.remoteJid;
-    const participant = whatsappMsg.key.participant || sender;
+        if (!this.telegramBot || !config.get('telegram.enabled')) return;
 
-    try {
-        await this.createUserMapping(sender, whatsappMsg);
-    } catch (err) {
-        logger.error(`❌ Failed to create user mapping for ${sender}:`, err);
-    }
-
-    this.queueMessage(sender, async () => {
-        try {
-            const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
-
-            if (!topicId) {
-                logger.error(`❌ Could not get or create topic for ${sender}`);
-                return;
-            }
-
-            if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
-            } else if (whatsappMsg.message?.imageMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
-            } else if (whatsappMsg.message?.videoMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
-            } else if (whatsappMsg.message?.audioMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
-            } else if (whatsappMsg.message?.documentMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
-            } else if (whatsappMsg.message?.stickerMessage) {
-                await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
-            } else if (whatsappMsg.message?.locationMessage) {
-                await this.handleWhatsAppLocation(whatsappMsg, topicId);
-            } else if (whatsappMsg.message?.contactMessage) {
-                await this.handleWhatsAppContact(whatsappMsg, topicId);
-            } else if (text) {
-                let messageText = text;
-                if (sender.endsWith('@g.us') && participant !== sender) {
-                    const senderPhone = participant.split('@')[0];
-                    const senderName = this.contactMappings.get(senderPhone) || senderPhone;
-                    messageText = `👤 ${senderName}:\n${text}`;
-                }
-
-                await this.sendSimpleMessage(topicId, messageText, sender);
-            }
-
-            if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
-                this.queueMessageForReadReceipt(sender, whatsappMsg.key);
-            }
-
-        } catch (err) {
-            logger.error(`❌ Error processing message from ${sender}:`, err);
+        const sender = whatsappMsg.key.remoteJid;
+        const participant = whatsappMsg.key.participant || sender;
+        const isFromMe = whatsappMsg.key.fromMe;
+        
+        if (sender === 'status@broadcast') {
+            await this.handleStatusMessage(whatsappMsg, text);
+            return;
         }
-    });
-}
+        
+        if (isFromMe) {
+            const existingTopicId = this.chatMappings.get(sender);
+            if (existingTopicId) {
+                await this.syncOutgoingMessage(whatsappMsg, text, existingTopicId, sender);
+            }
+            return;
+        }
+        
+        await this.createUserMapping(participant, whatsappMsg);
+        const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
+        
+        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
+        } else if (whatsappMsg.message?.imageMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId);
+        } else if (whatsappMsg.message?.videoMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId);
+        } else if (whatsappMsg.message?.audioMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId);
+        } else if (whatsappMsg.message?.documentMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId);
+        } else if (whatsappMsg.message?.stickerMessage) {
+            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId);
+        } else if (whatsappMsg.message?.locationMessage) { 
+            await this.handleWhatsAppLocation(whatsappMsg, topicId);
+        } else if (whatsappMsg.message?.contactMessage) { 
+            await this.handleWhatsAppContact(whatsappMsg, topicId);
+        } else if (text) {
+            let messageText = text;
+            if (sender.endsWith('@g.us') && participant !== sender) {
+                const senderPhone = participant.split('@')[0];
+                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
+                messageText = `👤 ${senderName}:\n${text}`;
+            }
+            
+            await this.sendSimpleMessage(topicId, messageText, sender);
+        }
 
+        if (whatsappMsg.key?.id && config.get('telegram.features.readReceipts') !== false) {
+            this.queueMessageForReadReceipt(sender, whatsappMsg.key);
+        }
+    }
 
     async handleStatusMessage(whatsappMsg, text) {
         try {
