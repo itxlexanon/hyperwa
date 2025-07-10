@@ -2,7 +2,7 @@ const { readFileSync: read, unlinkSync: remove, writeFileSync: create } = requir
 const path = require('path')
 const { exec } = require('child_process')
 const { tmpdir } = require('os')
-const logger = require('./logger')
+const logger = require('../Core/logger')
 
 class ViewOnceModule {
     constructor(bot) {
