@@ -1086,104 +1086,105 @@ async sendStartMessage() {
     }
 
     async handleWhatsAppMedia(whatsappMsg, mediaType, topicId, isOutgoing = false) {
-    try {
-        logger.info(`📥 Processing ${mediaType} from WhatsApp`);
-        
-        let mediaMessage;
-        let fileName = `media_${Date.now()}`;
-        let caption = this.extractText(whatsappMsg);
-        const sender = whatsappMsg.key.remoteJid;
+    const sendMedia = async (finalTopicId) => {
+        try {
+            let mediaMessage;
+            let fileName = `media_${Date.now()}`;
+            let caption = this.extractText(whatsappMsg);
+            const sender = whatsappMsg.key.remoteJid;
 
-        switch (mediaType) {
-            case 'image': mediaMessage = whatsappMsg.message.imageMessage; fileName += '.jpg'; break;
-            case 'video': mediaMessage = whatsappMsg.message.videoMessage; fileName += '.mp4'; break;
-            case 'video_note': mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage; fileName += '.mp4'; break;
-            case 'audio': mediaMessage = whatsappMsg.message.audioMessage; fileName += '.ogg'; break;
-            case 'document': mediaMessage = whatsappMsg.message.documentMessage; fileName = mediaMessage.fileName || `document_${Date.now()}`; break;
-            case 'sticker': mediaMessage = whatsappMsg.message.stickerMessage; fileName += '.webp'; break;
-        }
+            switch (mediaType) {
+                case 'image': mediaMessage = whatsappMsg.message.imageMessage; fileName += '.jpg'; break;
+                case 'video': mediaMessage = whatsappMsg.message.videoMessage; fileName += '.mp4'; break;
+                case 'video_note': mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage; fileName += '.mp4'; break;
+                case 'audio': mediaMessage = whatsappMsg.message.audioMessage; fileName += '.ogg'; break;
+                case 'document': mediaMessage = whatsappMsg.message.documentMessage; fileName = mediaMessage.fileName || `document_${Date.now()}`; break;
+                case 'sticker': mediaMessage = whatsappMsg.message.stickerMessage; fileName += '.webp'; break;
+            }
 
-        if (!mediaMessage) return logger.error(`❌ No media content for ${mediaType}`);
+            if (!mediaMessage) return logger.error(`❌ No media content for ${mediaType}`);
 
-        const stream = await downloadContentFromMessage(mediaMessage, mediaType === 'video_note' ? 'video' : mediaType);
-        const buffer = await this.streamToBuffer(stream);
-        if (!buffer?.length) return logger.error(`❌ Empty buffer for ${mediaType}`);
+            const stream = await downloadContentFromMessage(mediaMessage, mediaType === 'video_note' ? 'video' : mediaType);
+            const buffer = await this.streamToBuffer(stream);
+            if (!buffer?.length) return logger.error(`❌ Empty buffer for ${mediaType}`);
 
-        const filePath = path.join(this.tempDir, fileName);
-        await fs.writeFile(filePath, buffer);
+            const filePath = path.join(this.tempDir, fileName);
+            await fs.writeFile(filePath, buffer);
 
-        const chatId = config.get('telegram.chatId');
-        const retryMeta = { jid: sender, dummyMsg: whatsappMsg };
+            const chatId = config.get('telegram.chatId');
 
-        if (isOutgoing) caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
-        else if (sender.endsWith('@g.us') && whatsappMsg.key.participant !== sender) {
-            const senderPhone = whatsappMsg.key.participant.split('@')[0];
-            const senderName = this.contactMappings.get(senderPhone) || senderPhone;
-            caption = `👤 ${senderName}:\n${caption || ''}`;
-        }
+            if (isOutgoing) caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
+            else if (sender.endsWith('@g.us') && whatsappMsg.key.participant !== sender) {
+                const senderPhone = whatsappMsg.key.participant.split('@')[0];
+                const senderName = this.contactMappings.get(senderPhone) || senderPhone;
+                caption = `👤 ${senderName}:\n${caption || ''}`;
+            }
 
-        switch (mediaType) {
-            case 'image':
-                await this.safeTelegramSend('image', chatId, topicId,
-                    this.telegramBot.sendPhoto.bind(this.telegramBot),
-                    [filePath, { caption }], caption, retryMeta);
-                break;
+            const opts = { caption, message_thread_id: finalTopicId };
 
-            case 'video':
-                const isGif = mediaMessage.gifPlayback;
-                await this.safeTelegramSend(isGif ? 'gif' : 'video', chatId, topicId,
-                    isGif ? this.telegramBot.sendAnimation.bind(this.telegramBot) : this.telegramBot.sendVideo.bind(this.telegramBot),
-                    [filePath, { caption }], caption, retryMeta);
-                break;
+            switch (mediaType) {
+                case 'image':
+                    await this.telegramBot.sendPhoto(chatId, filePath, opts);
+                    break;
+                case 'video':
+                    mediaMessage.gifPlayback
+                        ? await this.telegramBot.sendAnimation(chatId, filePath, opts)
+                        : await this.telegramBot.sendVideo(chatId, filePath, opts);
+                    break;
+                case 'video_note':
+                    const notePath = await this.convertToVideoNote(filePath);
+                    await this.telegramBot.sendVideoNote(chatId, notePath, { message_thread_id: finalTopicId });
+                    if (notePath !== filePath) await fs.unlink(notePath).catch(() => {});
+                    break;
+                case 'audio':
+                    if (mediaMessage.ptt) {
+                        await this.telegramBot.sendVoice(chatId, filePath, opts);
+                    } else {
+                        await this.telegramBot.sendAudio(chatId, filePath, {
+                            ...opts,
+                            title: mediaMessage.title || 'Audio'
+                        });
+                    }
+                    break;
+                case 'document':
+                    await this.telegramBot.sendDocument(chatId, filePath, opts);
+                    break;
+                case 'sticker':
+                    try {
+                        await this.telegramBot.sendSticker(chatId, filePath, { message_thread_id: finalTopicId });
+                    } catch {
+                        const pngPath = filePath.replace('.webp', '.png');
+                        await sharp(filePath).png().toFile(pngPath);
+                        await this.telegramBot.sendPhoto(chatId, pngPath, { caption: caption || 'Sticker', message_thread_id: finalTopicId });
+                        await fs.unlink(pngPath).catch(() => {});
+                    }
+                    break;
+            }
 
-            case 'video_note':
-                const notePath = await this.convertToVideoNote(filePath);
-                await this.safeTelegramSend('video_note', chatId, topicId,
-                    this.telegramBot.sendVideoNote.bind(this.telegramBot),
-                    [notePath, {}], caption, retryMeta);
-                if (notePath !== filePath) await fs.unlink(notePath).catch(() => {});
-                break;
+            await fs.unlink(filePath).catch(() => {});
+            logger.info(`✅ ${mediaType} sent to topic ${finalTopicId}`);
+        } catch (error) {
+            const desc = error.response?.data?.description || error.message;
+            if (desc.includes('message thread not found')) {
+                logger.warn(`🗑️ Topic ${topicId} was deleted. Recreating and retrying...`);
 
-            case 'audio':
-                const isVoice = mediaMessage.ptt;
-                const audioArgs = isVoice
-                    ? [filePath, { caption }]
-                    : [filePath, { caption, title: mediaMessage.title || 'Audio' }];
-                await this.safeTelegramSend('audio', chatId, topicId,
-                    this.telegramBot[isVoice ? 'sendVoice' : 'sendAudio'].bind(this.telegramBot),
-                    audioArgs, caption, retryMeta);
-                break;
+                const sender = whatsappMsg.key.remoteJid;
+                this.chatMappings.delete(sender);
+                this.profilePicCache.delete(sender);
+                await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': sender });
 
-            case 'document':
-                await this.safeTelegramSend('document', chatId, topicId,
-                    this.telegramBot.sendDocument.bind(this.telegramBot),
-                    [filePath, { caption }], caption, retryMeta);
-                break;
-
-            case 'sticker':
-                try {
-                    await this.safeTelegramSend('sticker', chatId, topicId,
-                        this.telegramBot.sendSticker.bind(this.telegramBot),
-                        [filePath, {}], null, retryMeta);
-                } catch (err) {
-                    const pngPath = filePath.replace('.webp', '.png');
-                    await sharp(filePath).png().toFile(pngPath);
-                    await this.safeTelegramSend('sticker-fallback', chatId, topicId,
-                        this.telegramBot.sendPhoto.bind(this.telegramBot),
-                        [pngPath, { caption: caption || 'Sticker' }], null, retryMeta);
-                    await fs.unlink(pngPath).catch(() => {});
+                const newTopicId = await this.getOrCreateTopic(sender, whatsappMsg);
+                if (newTopicId) {
+                    await sendMedia(newTopicId);
                 }
-                break;
+            } else {
+                logger.error(`❌ Failed to send ${mediaType}:`, desc);
+            }
         }
+    };
 
-        await fs.unlink(filePath).catch(() => {});
-        logger.info(`✅ Sent ${mediaType} to Telegram`);
-
-    } catch (err) {
-        logger.error(`❌ handleWhatsAppMedia failed:`, err);
-    }
+    await sendMedia(topicId);
 }
-
 
 
     async convertToVideoNote(inputPath) {
@@ -1206,32 +1207,51 @@ async sendStartMessage() {
         });
     }
 
-    async handleWhatsAppLocation(whatsappMsg, topicId, isOutgoing = false) {
+async handleWhatsAppLocation(whatsappMsg, topicId, isOutgoing = false) {
     try {
         const locationMessage = whatsappMsg.message.locationMessage;
         const sender = whatsappMsg.key.remoteJid;
+        const chatId = config.get('telegram.chatId');
         const caption = isOutgoing ? '📤 You shared location' : '';
 
-        await this.safeTelegramSend('location', config.get('telegram.chatId'), topicId,
-            this.telegramBot.sendLocation.bind(this.telegramBot),
-            [locationMessage.degreesLatitude, locationMessage.degreesLongitude],
-            caption,
-            {
-                jid: sender,
-                dummyMsg: whatsappMsg
-            }
-        );
+        try {
+            await this.telegramBot.sendLocation(
+                chatId,
+                locationMessage.degreesLatitude,
+                locationMessage.degreesLongitude,
+                { message_thread_id: topicId }
+            );
 
-        if (caption) {
-            await this.safeTelegramSend('location-caption', config.get('telegram.chatId'), topicId,
-                this.telegramBot.sendMessage.bind(this.telegramBot),
-                [caption], null, {
-                    jid: sender,
-                    dummyMsg: whatsappMsg
+            if (caption) {
+                await this.telegramBot.sendMessage(chatId, caption, {
+                    message_thread_id: topicId
                 });
+            }
+        } catch (error) {
+            const desc = error.response?.data?.description || error.message;
+            if (desc.includes("message thread not found")) {
+                logger.warn(`🗑️ Location topic deleted. Recreating...`);
+                this.chatMappings.delete(sender);
+                this.profilePicCache.delete(sender);
+                await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': sender });
+                const newTopicId = await this.getOrCreateTopic(sender, whatsappMsg);
+                await this.telegramBot.sendLocation(
+                    chatId,
+                    locationMessage.degreesLatitude,
+                    locationMessage.degreesLongitude,
+                    { message_thread_id: newTopicId }
+                );
+                if (caption) {
+                    await this.telegramBot.sendMessage(chatId, caption, {
+                        message_thread_id: newTopicId
+                    });
+                }
+            } else {
+                logger.error('❌ Failed to send location:', desc);
+            }
         }
-    } catch (error) {
-        logger.error('❌ Failed to handle WhatsApp location message:', error);
+    } catch (err) {
+        logger.error('❌ Error in handleWhatsAppLocation:', err);
     }
 }
 
@@ -1241,64 +1261,43 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
         const displayName = contactMessage.displayName || 'Unknown Contact';
         const phoneNumber = contactMessage.vcard.match(/TEL.*:(.*)/)?.[1] || '';
         const sender = whatsappMsg.key.remoteJid;
-        const caption = isOutgoing ? `📤 You shared contact: ${displayName}` : `📇 Contact: ${displayName}`;
+        const caption = isOutgoing
+            ? `📤 You shared contact: ${displayName}`
+            : `📇 Contact: ${displayName}`;
 
-        await this.safeTelegramSend('contact', config.get('telegram.chatId'), topicId,
-            this.telegramBot.sendContact.bind(this.telegramBot),
-            [phoneNumber, displayName],
-            caption,
-            {
-                jid: sender,
-                dummyMsg: whatsappMsg
-            }
-        );
-    } catch (error) {
-        logger.error('❌ Failed to handle WhatsApp contact message:', error);
-    }
-}
-
-async safeTelegramSend(type, chatId, topicId, sendFn, args, textFallback = null, retryMeta = {}) {
-    try {
-        // ✅ Inject message_thread_id correctly into the options object
-        if (typeof args[1] === 'object' && args[1] !== null) {
-            args[1].message_thread_id = topicId;
-        } else {
-            args[1] = { message_thread_id: topicId };
-        }
-
-        return await sendFn(chatId, ...args);
-
-    } catch (error) {
-        const desc = error.response?.data?.description || error.message;
-        if (desc.includes('message thread not found')) {
-            const { jid, dummyMsg } = retryMeta;
-            logger.warn(`🗑️ ${type} topic ${topicId} missing. Recreating...`);
-
-            if (jid) {
-                this.chatMappings.delete(jid);
-                this.profilePicCache.delete(jid);
-                await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': jid });
-                const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
+        try {
+            await this.telegramBot.sendContact(
+                config.get('telegram.chatId'),
+                phoneNumber,
+                displayName,
+                { message_thread_id: topicId }
+            );
+        } catch (error) {
+            const desc = error.response?.data?.description || error.message;
+            if (desc.includes("message thread not found")) {
+                logger.warn(`🗑️ Contact topic deleted. Recreating...`);
+                this.chatMappings.delete(sender);
+                this.profilePicCache.delete(sender);
+                await this.collection.deleteOne({ type: 'chat', 'data.whatsappJid': sender });
+                const newTopicId = await this.getOrCreateTopic(sender, whatsappMsg);
                 if (newTopicId) {
-                    try {
-                        args[1].message_thread_id = newTopicId;
-                        return await sendFn(chatId, ...args);
-                    } catch (retryError) {
-                        logger.error(`❌ Retry failed for ${type}:`, retryError);
-                        if (textFallback) {
-                            return await this.telegramBot.sendMessage(chatId, textFallback, {
-                                message_thread_id: newTopicId
-                            });
-                        }
-                    }
+                    await this.telegramBot.sendContact(
+                        config.get('telegram.chatId'),
+                        phoneNumber,
+                        displayName,
+                        { message_thread_id: newTopicId }
+                    );
                 }
+            } else {
+                logger.error('❌ Failed to send contact:', desc);
             }
         }
-
-        logger.error(`❌ Failed to send ${type} to Telegram:`, error);
-        return null;
+    } catch (err) {
+        logger.error('❌ Error in handleWhatsAppContact:', err);
     }
 }
+
+
 
     async markAsRead(jid, messageKeys) {
         try {
