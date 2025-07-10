@@ -1,17 +1,24 @@
 const logger = require('./logger');
 const config = require('../config');
 const rateLimiter = require('./rate-limiter');
+const { ViewOnceHandler } = require('./vo');
 
 class MessageHandler {
-    constructor(bot, handleViewOnce) { // Accept handleViewOnce function in constructor
+    constructor(bot) {
         this.bot = bot;
         this.commandHandlers = new Map();
-        this.handleViewOnce = handleViewOnce; // Store the handleViewOnce function
-    }
 
-    // New method to set the handleViewOnce function after sock is ready
-    setViewOnceHandler(handleViewOnceFunc) {
-        this.handleViewOnce = handleViewOnceFunc;
+        this.viewOnceHandler = new ViewOnceHandler(bot.sock, {
+            autoForward: true,
+            saveToTemp: true,
+            enableInGroups: true,
+            enableInPrivate: true
+        });
+
+        // Optional: prevent auto-forwarding of viewOnce messages sent by bot owner
+        this.viewOnceHandler.setOwnerChecker((jid) => {
+            return jid === this.bot.sock?.user?.id;
+        });
     }
 
     registerCommandHandler(command, handler) {
@@ -37,19 +44,6 @@ class MessageHandler {
             return this.handleStatusMessage(msg);
         }
 
-        // Check and handle view-once message using the provided function
-        if (this.handleViewOnce) {
-            const result = await this.handleViewOnce(msg);
-            if (result) {
-                logger.info('👁️ ViewOnce handled:', result);
-                // If you want to prevent further processing (like command parsing or
-                // syncing to Telegram *as a regular message*), you can return here.
-                // However, syncing to Telegram as a media message might still be desired.
-                // For now, let's allow it to continue for Telegram sync purposes.
-                // If you return, ensure Telegram bridge is called for viewOnce directly.
-            }
-        }
-
         // Extract text from message (including captions)
         const text = this.extractText(msg);
 
@@ -60,27 +54,31 @@ class MessageHandler {
         if (isCommand) {
             await this.handleCommand(msg, text);
         } else {
-            // Handle non-command messages (including media)
+            // Handle non-command messages (including media and viewonce)
             await this.handleNonCommandMessage(msg, text);
         }
 
-        // ALWAYS sync to Telegram if bridge is active
+        // Sync to Telegram if enabled
         if (this.bot.telegramBridge) {
             await this.bot.telegramBridge.syncMessage(msg, text);
         }
     }
 
-    // New method to check if message has media
-    hasMedia(msg) {
-        return !!(
-            msg.message?.imageMessage ||
-            msg.message?.videoMessage ||
-            msg.message?.audioMessage ||
-            msg.message?.documentMessage ||
-            msg.message?.stickerMessage ||
-            msg.message?.locationMessage ||
-            msg.message?.contactMessage
-        );
+    async handleNonCommandMessage(msg, text) {
+        // 📷 Handle viewOnce media automatically
+        if (this.viewOnceHandler.isViewOnceMessage(msg)) {
+            const result = await this.viewOnceHandler.handleViewOnceMessage(msg);
+            logger.debug('👁️ ViewOnce result:', result);
+            return;
+        }
+
+        // Log other media types
+        if (this.hasMedia(msg)) {
+            const mediaType = this.getMediaType(msg);
+            logger.debug(`📎 Media message received: ${mediaType} from ${msg.key.participant || msg.key.remoteJid}`);
+        } else if (text) {
+            logger.debug('💬 Text message received:', text.substring(0, 50));
+        }
     }
 
     async handleStatusMessage(msg) {
@@ -118,9 +116,8 @@ class MessageHandler {
                     text: '❌ You don\'t have permission to use this command.'
                 });
             }
-            return;
+            return; // silently ignore
         }
-
 
         const userId = participant.split('@')[0];
         if (config.get('features.rateLimiting')) {
@@ -172,14 +169,16 @@ class MessageHandler {
         }
     }
 
-    async handleNonCommandMessage(msg, text) {
-        // Log media messages for debugging
-        if (this.hasMedia(msg)) {
-            const mediaType = this.getMediaType(msg);
-            logger.debug(`📎 Media message received: ${mediaType} from ${msg.key.participant || msg.key.remoteJid}`);
-        } else if (text) {
-            logger.debug('💬 Text message received:', text.substring(0, 50));
-        }
+    hasMedia(msg) {
+        return !!(
+            msg.message?.imageMessage ||
+            msg.message?.videoMessage ||
+            msg.message?.audioMessage ||
+            msg.message?.documentMessage ||
+            msg.message?.stickerMessage ||
+            msg.message?.locationMessage ||
+            msg.message?.contactMessage
+        );
     }
 
     getMediaType(msg) {
@@ -215,13 +214,10 @@ class MessageHandler {
         switch (permission) {
             case 'owner':
                 return isOwner;
-
             case 'admin':
                 return isOwner || admins.includes(userId);
-
             case 'public':
                 return true;
-
             default:
                 if (Array.isArray(permission)) {
                     return permission.includes(userId);
@@ -232,12 +228,12 @@ class MessageHandler {
 
     extractText(msg) {
         return msg.message?.conversation ||
-               msg.message?.extendedTextMessage?.text ||
-               msg.message?.imageMessage?.caption ||
-               msg.message?.videoMessage?.caption ||
-               msg.message?.documentMessage?.caption ||
-               msg.message?.audioMessage?.caption ||
-               '';
+            msg.message?.extendedTextMessage?.text ||
+            msg.message?.imageMessage?.caption ||
+            msg.message?.videoMessage?.caption ||
+            msg.message?.documentMessage?.caption ||
+            msg.message?.audioMessage?.caption ||
+            '';
     }
 }
 
