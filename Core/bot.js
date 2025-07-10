@@ -1,4 +1,3 @@
-// bot (15).js
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const fs = require('fs-extra');
@@ -17,7 +16,7 @@ class HyperWaBot {
     constructor() {
         this.sock = null;
         this.authPath = './auth_info';
-        this.messageHandler = null;
+        this.messageHandler = null; // Initialize as null here
         this.telegramBridge = null;
         this.isShuttingDown = false;
         this.db = null;
@@ -51,14 +50,14 @@ class HyperWaBot {
             }
         }
 
-        // Initialize MessageHandler, passing null for viewOnceHandler initially,
-        // it will be set after sock is ready.
-        this.messageHandler = new MessageHandler(this, null);
+        // *IMPORTANT*: Initialize MessageHandler BEFORE starting WhatsApp connection,
+        // but pass null for handleViewOnce initially.
+        this.messageHandler = new MessageHandler(this, null); // Pass null for handleViewOnce initially
 
         // Load modules using the ModuleLoader
         await this.moduleLoader.loadModules();
 
-        // Start WhatsApp connection
+        // Start WhatsApp connection. This is where this.sock becomes available.
         await this.startWhatsApp();
 
         logger.info('✅ HyperWa Userbot initialized successfully!');
@@ -94,8 +93,7 @@ class HyperWaBot {
                 browser: ['HyperWa', 'Chrome', '3.0'],
             });
 
-            // Setup the view once handler now that 'this.sock' is available
-            // You can pull options from config or define them directly here.
+            // *IMPORTANT*: Setup the view once handler now that 'this.sock' is available
             this.handleViewOnce = setupViewOnceHandler(this.sock, config.get('features.viewOnce', {
                 autoForward: true,
                 saveToTemp: true,
@@ -107,7 +105,7 @@ class HyperWaBot {
             }));
             logger.info('✅ ViewOnce handler setup!');
 
-            // Pass the handleViewOnce function to the message handler
+            // *IMPORTANT*: Pass the handleViewOnce function to the message handler NOW
             this.messageHandler.setViewOnceHandler(this.handleViewOnce);
 
 
