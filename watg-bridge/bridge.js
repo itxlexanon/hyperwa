@@ -1,4 +1,3 @@
-
 const TelegramBot = require('node-telegram-bot-api');
 const TelegramCommands = require('./commands');
 const config = require('../config');
@@ -381,49 +380,96 @@ class TelegramBridge {
         }
     }
 
-async sendQRCode(qrCode) {
-    try {
-        if (!this.telegramBot) return;
+async sendQRCode(qrData) {
+    if (!this.telegramBot) {
+        throw new Error('Telegram bot not initialized');
+    }
 
-        const qrcode = require('qrcode');
-        const qrBuffer = await qrcode.toBuffer(qrCode, {
-            type: 'png',
+    const chatId = config.get('telegram.chatId');
+    if (!chatId) {
+        throw new Error('Telegram chat ID not configured');
+    }
+
+    try {
+        // Generate QR code image
+        const qrImagePath = path.join(this.tempDir, `qr_${Date.now()}.png`);
+        await qrcode.toFile(qrImagePath, qrData, {
             width: 512,
-            margin: 2
+            margin: 2,
+            color: {
+                dark: '#000000',
+                light: '#FFFFFF'
+            }
         });
 
-        const chatId = config.get('telegram.chatId');        // bot's main chat
-        const logChannel = config.get('telegram.logChannel'); // configured log channel
+        // Send QR code image
+        await this.telegramBot.sendPhoto(chatId, qrImagePath, {
+            caption: '📱 *WhatsApp QR Code*\n\n' +
+                    '🔄 Scan this QR code with WhatsApp to connect\n' +
+                    '⏰ QR code expires in 30 seconds\n\n' +
+                    '💡 Open WhatsApp → Settings → Linked Devices → Link a Device',
+            parse_mode: 'Markdown'
+        });
 
-        const caption = '📱 *Scan QR Code to Login to WhatsApp*\n\nScan this QR code with your WhatsApp mobile app to connect.';
-
-        // ✅ Send to main bot chat (your own chat with the bot)
-        if (chatId && !chatId.includes('YOUR_CHAT_ID')) {
-            await this.telegramBot.sendPhoto(chatId, qrBuffer, {
-                caption,
-                parse_mode: 'Markdown'
-            });
-        }
-
-        // ✅ Also send to log channel if set
-        if (logChannel && !logChannel.includes('YOUR_LOG_CHANNEL')) {
-            await this.telegramBot.sendPhoto(logChannel, qrBuffer, {
-                caption: '📱 *WhatsApp QR Code Generated*\n\nWaiting for scan...',
-                parse_mode: 'Markdown'
-            });
-        }
-
-        logger.info('📱 QR code sent to bot chat and log channel');
-
-        // Optional: Sync contacts after scan window
+        // Clean up QR code file after 60 seconds
         setTimeout(async () => {
-            await this.syncContacts();
-        }, 10000);
+            try {
+                await fs.remove(qrImagePath);
+            } catch (error) {
+                logger.debug('QR code file cleanup error:', error);
+            }
+        }, 60000);
+
+        logger.info('✅ QR code sent to Telegram successfully');
 
     } catch (error) {
-        logger.error('❌ Failed to send QR code to Telegram:', error);
+        logger.error('❌ Error sending QR code to Telegram:', error);
+        throw error;
     }
 }
+
+async sendQRCodeToChannel(qrData, channelId) {
+    if (!this.telegramBot) {
+        throw new Error('Telegram bot not initialized');
+    }
+
+    try {
+        // Generate QR code image
+        const qrImagePath = path.join(this.tempDir, `qr_channel_${Date.now()}.png`);
+        await qrcode.toFile(qrImagePath, qrData, {
+            width: 512,
+            margin: 2,
+            color: {
+                dark: '#000000',
+                light: '#FFFFFF'
+            }
+        });
+
+        // Send QR code image to channel
+        await this.telegramBot.sendPhoto(channelId, qrImagePath, {
+            caption: '📱 *WhatsApp QR Code (Log Channel)*\n\n' +
+                    '🔄 Scan this QR code with WhatsApp to connect\n' +
+                    '⏰ QR code expires in 30 seconds',
+            parse_mode: 'Markdown'
+        });
+
+        // Clean up QR code file
+        setTimeout(async () => {
+            try {
+                await fs.remove(qrImagePath);
+            } catch (error) {
+                logger.debug('QR code file cleanup error:', error);
+            }
+        }, 60000);
+
+        logger.info('✅ QR code sent to Telegram log channel successfully');
+
+    } catch (error) {
+        logger.error('❌ Error sending QR code to log channel:', error);
+        throw error;
+    }
+}
+
 
 
 async sendStartMessage() {
@@ -504,21 +550,22 @@ async sendStartMessage() {
         }
     }
 
-    async verifyTopicExists(topicId) {
-        try {
-            const chatId = config.get('telegram.chatId');
-            
-            const testMsg = await this.telegramBot.sendMessage(chatId, '🔍', {
-                message_thread_id: topicId
-            });
-            
-            await this.telegramBot.deleteMessage(chatId, testMsg.message_id);
-            return true;
-            
-        } catch (error) {
-            return false;
-        }
+async verifyTopicExists(topicId) {
+    try {
+        const chatId = config.get('telegram.chatId');
+
+        // 🔧 Use zero-width space to avoid triggering bots
+        const testMsg = await this.telegramBot.sendMessage(chatId, '\u200B', {
+            message_thread_id: topicId
+        });
+
+        await this.telegramBot.deleteMessage(chatId, testMsg.message_id);
+        return true;
+
+    } catch (error) {
+        return false;
     }
+}
 
     async recreateMissingTopics() {
         try {
@@ -807,21 +854,25 @@ async sendStartMessage() {
     }
 
     async getOrCreateTopic(chatJid, whatsappMsg) {
+    // ✅ Prevent concurrent duplicate topic creation
+    if (this.topicVerificationCache.has(chatJid)) {
+        logger.debug(`⏳ Topic creation already in progress for ${chatJid}`);
+        return this.topicVerificationCache.get(chatJid);
+    }
+
+    const topicPromise = (async () => {
         if (this.chatMappings.has(chatJid)) {
             const topicId = this.chatMappings.get(chatJid);
-            
             const exists = await this.verifyTopicExists(topicId);
-            if (exists) {
-                return topicId;
-            } else {
-                logger.warn(`🗑️ Topic ${topicId} for ${chatJid} was deleted, recreating...`);
-                this.chatMappings.delete(chatJid);
-                this.profilePicCache.delete(chatJid); // Clear profile pic cache
-                await this.collection.deleteOne({ 
-                    type: 'chat', 
-                    'data.whatsappJid': chatJid 
-                });
-            }
+            if (exists) return topicId;
+
+            logger.warn(`🗑️ Topic ${topicId} for ${chatJid} was deleted, recreating...`);
+            this.chatMappings.delete(chatJid);
+            this.profilePicCache.delete(chatJid);
+            await this.collection.deleteOne({
+                type: 'chat',
+                'data.whatsappJid': chatJid
+            });
         }
 
         const chatId = config.get('telegram.chatId');
@@ -834,10 +885,10 @@ async sendStartMessage() {
             const isGroup = chatJid.endsWith('@g.us');
             const isStatus = chatJid === 'status@broadcast';
             const isCall = chatJid === 'call@broadcast';
-            
+
             let topicName;
             let iconColor = 0x7ABA3C;
-            
+
             if (isStatus) {
                 topicName = `📊 Status Updates`;
                 iconColor = 0xFF6B35;
@@ -855,17 +906,15 @@ async sendStartMessage() {
                 iconColor = 0x6FB9F0;
             } else {
                 const phone = chatJid.split('@')[0];
-                // FIXED: Use contact name from contacts list, not handle name
                 const contactName = this.contactMappings.get(phone);
                 topicName = contactName || `+${phone}`;
-                logger.debug(`📝 Creating topic for ${phone}: "${topicName}" (contact: ${contactName ? 'found' : 'not found'})`);
+                logger.debug(`📝 Creating topic for ${phone}: "${topicName}"`);
             }
 
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
 
-            // Get initial profile picture URL
             let initialProfilePicUrl = null;
             if (!isStatus && !isCall) {
                 try {
@@ -878,17 +927,25 @@ async sendStartMessage() {
 
             await this.saveChatMapping(chatJid, topic.message_thread_id, initialProfilePicUrl);
             logger.info(`🆕 Created Telegram topic: "${topicName}" (ID: ${topic.message_thread_id}) for ${chatJid}`);
-            
+
             if (!isStatus && !isCall) {
                 await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg, initialProfilePicUrl);
             }
-            
+
             return topic.message_thread_id;
+
         } catch (error) {
             logger.error('❌ Failed to create Telegram topic:', error);
             return null;
         }
-    }
+    })();
+
+    this.topicVerificationCache.set(chatJid, topicPromise);
+    const createdTopicId = await topicPromise;
+    this.topicVerificationCache.delete(chatJid);
+    return createdTopicId;
+}
+ 
 
     async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUrl = null) {
         try {
@@ -1803,7 +1860,6 @@ async sendStartMessage() {
             `🚀 Ready to bridge messages!`);
 
         await this.syncContacts();
-        await this.recreateMissingTopics();
     }
 
     async setupWhatsAppHandlers() {
