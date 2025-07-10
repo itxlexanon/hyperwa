@@ -191,21 +191,28 @@ class ViewOnceModule {
     }
 
     async detectViewOnce(msg, context) {
-        if (!msg || !msg.message || !msg.key) {
-            this.log('Invalid message in detectViewOnce');
-            return;
+        try {
+            if (!msg || !msg.message || !msg.key) {
+                this.log('Invalid message in detectViewOnce');
+                return;
+            }
+            if (!this.isViewOnceMessage(msg)) return;
+            const sender = msg.key.participant || msg.key.remoteJid;
+            const isOwner = context.isOwner || false;
+            if (isOwner && this.config.skipOwner) {
+                this.log(`Skipping ViewOnce message from owner: ${sender}`);
+                return;
+            }
+            this.log(`Detected ViewOnce message from ${sender}`);
+            await this.processViewOnce(msg, context);
+        } catch (error) {
+            this.logError('Error in detectViewOnce:', error);
         }
-        if (!this.isViewOnceMessage(msg)) return;
-        const sender = msg.key.participant || msg.key.remoteJid;
-        const isOwner = context.isOwner || false;
-        if (isOwner && this.config.skipOwner) return;
-        this.log(`Detected ViewOnce message from ${sender}`);
-        await this.processViewOnce(msg, context);
     }
 
     async processViewOnce(msg, context) {
         try {
-            if (!msg || !msg.message || !this.isViewOnceMessage(msg)) {
+            if (!msg || !msg.message || !msg.key || !this.isViewOnceMessage(msg)) {
                 this.log('Invalid message in processViewOnce');
                 return;
             }
