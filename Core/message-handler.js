@@ -1,19 +1,21 @@
 const logger = require('./logger');
 const config = require('../config');
 const rateLimiter = require('./rate-limiter');
-const { ViewOnceHandler } = require('./vo');
+const VO = require('./vo'); // Import the whole module
+
 
 class MessageHandler {
     constructor(bot) {
         this.bot = bot;
         this.commandHandlers = new Map();
 
-        this.viewOnceHandler = new ViewOnceHandler(bot.sock, {
-            autoForward: true,
-            saveToTemp: true,
-            enableInGroups: true,
-            enableInPrivate: true
-        });
+this.viewOnceHandler = VO.createViewOnceHandler(bot.sock, {
+    autoForward: true,
+    saveToTemp: true,
+    enableInGroups: true,
+    enableInPrivate: true
+});
+
 
         // Optional: prevent auto-forwarding of viewOnce messages sent by bot owner
         this.viewOnceHandler.setOwnerChecker((jid) => {
