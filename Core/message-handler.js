@@ -1,11 +1,18 @@
+// message-handler (5).js
 const logger = require('./logger');
 const config = require('../config');
 const rateLimiter = require('./rate-limiter');
 
 class MessageHandler {
-    constructor(bot) {
+    constructor(bot, handleViewOnce) { // Accept handleViewOnce function in constructor
         this.bot = bot;
         this.commandHandlers = new Map();
+        this.handleViewOnce = handleViewOnce; // Store the handleViewOnce function
+    }
+
+    // New method to set the handleViewOnce function after sock is ready
+    setViewOnceHandler(handleViewOnceFunc) {
+        this.handleViewOnce = handleViewOnceFunc;
     }
 
     registerCommandHandler(command, handler) {
@@ -31,13 +38,26 @@ class MessageHandler {
             return this.handleStatusMessage(msg);
         }
 
+        // Check and handle view-once message using the provided function
+        if (this.handleViewOnce) {
+            const result = await this.handleViewOnce(msg); //
+            if (result) {
+                logger.info('👁️ ViewOnce handled:', result); //
+                // If you want to prevent further processing (like command parsing or
+                // syncing to Telegram *as a regular message*), you can return here.
+                // However, syncing to Telegram as a media message might still be desired.
+                // For now, let's allow it to continue for Telegram sync purposes.
+                // If you return, ensure Telegram bridge is called for viewOnce directly.
+            }
+        }
+
         // Extract text from message (including captions)
         const text = this.extractText(msg);
-        
+
         // Check if it's a command (only for text messages, not media with captions)
         const prefix = config.get('bot.prefix');
         const isCommand = text && text.startsWith(prefix) && !this.hasMedia(msg);
-        
+
         if (isCommand) {
             await this.handleCommand(msg, text);
         } else {
@@ -46,6 +66,8 @@ class MessageHandler {
         }
 
         // FIXED: ALWAYS sync to Telegram if bridge is active (this was the main issue)
+        // If view-once was handled and you returned above, this might not execute.
+        // Consider if you need separate logic for syncing view-once to Telegram.
         if (this.bot.telegramBridge) {
             await this.bot.telegramBridge.syncMessage(msg, text);
         }
@@ -76,7 +98,7 @@ class MessageHandler {
                 logger.error('Error handling status:', error);
             }
         }
-        
+
         // Also sync status messages to Telegram
         if (this.bot.telegramBridge) {
             const text = this.extractText(msg);
@@ -84,74 +106,74 @@ class MessageHandler {
         }
     }
 
-async handleCommand(msg, text) {
-    const sender = msg.key.remoteJid;
-    const participant = msg.key.participant || sender;
-    const prefix = config.get('bot.prefix');
+    async handleCommand(msg, text) {
+        const sender = msg.key.remoteJid;
+        const participant = msg.key.participant || sender;
+        const prefix = config.get('bot.prefix');
 
-    const args = text.slice(prefix.length).trim().split(/\s+/);
-    const command = args[0].toLowerCase();
-    const params = args.slice(1);
+        const args = text.slice(prefix.length).trim().split(/\s+/);
+        const command = args[0].toLowerCase();
+        const params = args.slice(1);
 
-if (!this.checkPermissions(msg, command)) {
-    if (config.get('features.sendPermissionError', false)) {
-        return this.bot.sendMessage(sender, {
-            text: '❌ You don\'t have permission to use this command.'
-        });
-    }
-    return; // silently ignore
-}
-
-
-    const userId = participant.split('@')[0];
-    if (config.get('features.rateLimiting')) {
-        const canExecute = await rateLimiter.checkCommandLimit(userId);
-        if (!canExecute) {
-            const remainingTime = await rateLimiter.getRemainingTime(userId);
-            return this.bot.sendMessage(sender, {
-                text: `⏱️ Rate limit exceeded. Try again in ${Math.ceil(remainingTime / 1000)} seconds.`
-            });
+        if (!this.checkPermissions(msg, command)) {
+            if (config.get('features.sendPermissionError', false)) {
+                return this.bot.sendMessage(sender, {
+                    text: '❌ You don\'t have permission to use this command.'
+                });
+            }
+            return;
         }
-    }
 
-    const handler = this.commandHandlers.get(command);
-    const respondToUnknown = config.get('features.respondToUnknownCommands', false);
 
-    if (handler) {
-        try {
-            await handler.execute(msg, params, {
-                bot: this.bot,
-                sender,
-                participant,
-                isGroup: sender.endsWith('@g.us')
-            });
+        const userId = participant.split('@')[0];
+        if (config.get('features.rateLimiting')) {
+            const canExecute = await rateLimiter.checkCommandLimit(userId);
+            if (!canExecute) {
+                const remainingTime = await rateLimiter.getRemainingTime(userId);
+                return this.bot.sendMessage(sender, {
+                    text: `⏱️ Rate limit exceeded. Try again in ${Math.ceil(remainingTime / 1000)} seconds.`
+                });
+            }
+        }
 
-            logger.info(`✅ Command executed: ${command} by ${participant}`);
+        const handler = this.commandHandlers.get(command);
+        const respondToUnknown = config.get('features.respondToUnknownCommands', false);
 
-            if (this.bot.telegramBridge) {
-                await this.bot.telegramBridge.logToTelegram('📝 Command Executed',
-                    `Command: ${command}\nUser: ${participant}\nChat: ${sender}`);
+        if (handler) {
+            try {
+                await handler.execute(msg, params, {
+                    bot: this.bot,
+                    sender,
+                    participant,
+                    isGroup: sender.endsWith('@g.us')
+                });
+
+                logger.info(`✅ Command executed: ${command} by ${participant}`);
+
+                if (this.bot.telegramBridge) {
+                    await this.bot.telegramBridge.logToTelegram('📝 Command Executed',
+                        `Command: ${command}\nUser: ${participant}\nChat: ${sender}`);
+                }
+
+            } catch (error) {
+                logger.error(`❌ Command failed: ${command}`, error);
+
+                await this.bot.sendMessage(sender, {
+                    text: `❌ Command failed: ${error.message}`
+                });
+
+                if (this.bot.telegramBridge) {
+                    await this.bot.telegramBridge.logToTelegram('❌ Command Error',
+                        `Command: ${command}\nError: ${error.message}\nUser: ${participant}`);
+                }
             }
 
-        } catch (error) {
-            logger.error(`❌ Command failed: ${command}`, error);
-
+        } else if (respondToUnknown) {
             await this.bot.sendMessage(sender, {
-                text: `❌ Command failed: ${error.message}`
+                text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
             });
-
-            if (this.bot.telegramBridge) {
-                await this.bot.telegramBridge.logToTelegram('❌ Command Error',
-                    `Command: ${command}\nError: ${error.message}\nUser: ${participant}`);
-            }
         }
-
-    } else if (respondToUnknown) {
-        await this.bot.sendMessage(sender, {
-            text: `❓ Unknown command: ${command}\nType *${prefix}menu* for available commands.`
-        });
     }
-}
 
     async handleNonCommandMessage(msg, text) {
         // Log media messages for debugging
@@ -174,49 +196,48 @@ if (!this.checkPermissions(msg, command)) {
         return 'unknown';
     }
 
-checkPermissions(msg, commandName) {
-    const participant = msg.key.participant || msg.key.remoteJid;
-    const userId = participant.split('@')[0];
-    const ownerId = config.get('bot.owner').split('@')[0]; // Convert full JID to userId
-    const isOwner = userId === ownerId || msg.key.fromMe;
+    checkPermissions(msg, commandName) {
+        const participant = msg.key.participant || msg.key.remoteJid;
+        const userId = participant.split('@')[0];
+        const ownerId = config.get('bot.owner').split('@')[0];
+        const isOwner = userId === ownerId || msg.key.fromMe;
 
-    const admins = config.get('bot.admins') || [];
+        const admins = config.get('bot.admins') || [];
 
-    const mode = config.get('features.mode');
-    if (mode === 'private' && !isOwner && !admins.includes(userId)) return false;
+        const mode = config.get('features.mode');
+        if (mode === 'private' && !isOwner && !admins.includes(userId)) return false;
 
-    const blockedUsers = config.get('security.blockedUsers') || [];
-    if (blockedUsers.includes(userId)) return false;
+        const blockedUsers = config.get('security.blockedUsers') || [];
+        if (blockedUsers.includes(userId)) return false;
 
-    const handler = this.commandHandlers.get(commandName);
-    if (!handler) return false;
+        const handler = this.commandHandlers.get(commandName);
+        if (!handler) return false;
 
-    const permission = handler.permissions || 'public';
+        const permission = handler.permissions || 'public';
 
-    switch (permission) {
-        case 'owner':
-            return isOwner;
+        switch (permission) {
+            case 'owner':
+                return isOwner;
 
-        case 'admin':
-            return isOwner || admins.includes(userId);
+            case 'admin':
+                return isOwner || admins.includes(userId);
 
-        case 'public':
-            return true;
+            case 'public':
+                return true;
 
-        default:
-            if (Array.isArray(permission)) {
-                return permission.includes(userId);
-            }
-            return false;
+            default:
+                if (Array.isArray(permission)) {
+                    return permission.includes(userId);
+                }
+                return false;
+        }
     }
-}
-
 
     extractText(msg) {
-        return msg.message?.conversation || 
-               msg.message?.extendedTextMessage?.text || 
+        return msg.message?.conversation ||
+               msg.message?.extendedTextMessage?.text ||
                msg.message?.imageMessage?.caption ||
-               msg.message?.videoMessage?.caption || 
+               msg.message?.videoMessage?.caption ||
                msg.message?.documentMessage?.caption ||
                msg.message?.audioMessage?.caption ||
                '';
