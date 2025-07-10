@@ -6,16 +6,28 @@ class MessageHandler {
     constructor(bot) {
         this.bot = bot;
         this.commandHandlers = new Map();
-        this.messageHooks = new Map(); // Added for message hooks
+        this.messageHooks = new Map();
         logger.debug('MessageHandler initialized');
     }
 
     registerCommandHandler(command, handler) {
+        if (!command || typeof handler !== 'object' || typeof handler.execute !== 'function') {
+            logger.error(`Invalid command handler for ${command}`);
+            return;
+        }
         this.commandHandlers.set(command.toLowerCase(), handler);
         logger.debug(`📝 Registered command handler: ${command}`);
     }
 
     registerMessageHook(hook, handler) {
+        if (!hook || typeof hook !== 'string') {
+            logger.error('Invalid hook name:', hook);
+            return;
+        }
+        if (typeof handler !== 'function') {
+            logger.error(`Invalid handler for hook ${hook}`);
+            return;
+        }
         this.messageHooks.set(hook, handler);
         logger.debug(`📝 Registered message hook: ${hook}`);
     }
@@ -37,6 +49,11 @@ class MessageHandler {
     }
 
     async processMessage(msg) {
+        if (!msg || !msg.key) {
+            logger.warn('Invalid message received');
+            return;
+        }
+
         // Run message hooks
         const context = {
             bot: this.bot,
@@ -46,10 +63,18 @@ class MessageHandler {
         };
         for (const [hook, handler] of this.messageHooks) {
             try {
+                if (typeof handler !== 'function') {
+                    logger.error(`Invalid handler for hook ${hook}`);
+                    continue;
+                }
                 await handler(msg, context);
                 logger.debug(`Executed hook: ${hook}`);
             } catch (error) {
-                logger.error(`Error in message hook ${hook}:`, error);
+                logger.error(`Error in message hook ${hook}: ${error.message}`, {
+                    stack: error.stack,
+                    messageId: msg.key.id,
+                    hook
+                });
             }
         }
 
