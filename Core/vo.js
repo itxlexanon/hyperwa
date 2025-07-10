@@ -1,117 +1,87 @@
-const { readFileSync: read, unlinkSync: remove, writeFileSync: create } = require('fs');
+const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const { tmpdir } = require('os');
+const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 
 class ViewOnceHandler {
     constructor(client, config = {}) {
         this.client = client;
         this.config = {
-            autoForward: config.autoForward ?? true,
-            saveToTemp: config.saveToTemp ?? true,
+            autoForward: config.autoForward ?? false,
+            saveToTemp: config.saveToTemp ?? false,
             tempDir: config.tempDir || './temp',
             enableInGroups: config.enableInGroups ?? true,
             enableInPrivate: config.enableInPrivate ?? true,
-            logActivity: config.logActivity ?? true,
-            ...config
+            forwardTarget: config.forwardTarget || null
         };
         this.ensureTempDir();
     }
 
     ensureTempDir() {
-        const fs = require('fs');
         if (!fs.existsSync(this.config.tempDir)) {
             fs.mkdirSync(this.config.tempDir, { recursive: true });
         }
     }
 
     isViewOnceMessage(msg) {
-        return !!(
-            msg?.message?.viewOnceMessage || 
-            msg?.message?.viewOnceMessageV2 || 
-            msg?.message?.viewOnceMessageV2Extension ||
-            msg?.msg?.viewOnce ||
-            (msg?.message && Object.keys(msg.message).some(key =>
-                msg.message[key]?.viewOnce === true
-            ))
-        );
+        try {
+            const m = msg?.message;
+            if (!m) return false;
+            return (
+                m?.viewOnceMessage ||
+                m?.viewOnceMessageV2 ||
+                m?.viewOnceMessageV2Extension ||
+                Object.values(m).some(v => v?.viewOnce === true)
+            );
+        } catch {
+            return false;
+        }
     }
 
     extractViewOnceContent(msg) {
-        try {
-            let viewOnceMsg = null;
+        let viewOnceMsg = msg?.message?.viewOnceMessage?.message ||
+                          msg?.message?.viewOnceMessageV2?.message ||
+                          msg?.message?.viewOnceMessageV2Extension?.message;
 
-            if (msg?.message?.viewOnceMessage) {
-                viewOnceMsg = msg.message.viewOnceMessage.message;
-            } else if (msg?.message?.viewOnceMessageV2) {
-                viewOnceMsg = msg.message.viewOnceMessageV2.message;
-            } else if (msg?.message?.viewOnceMessageV2Extension) {
-                viewOnceMsg = msg.message.viewOnceMessageV2Extension.message;
-            } else if (msg?.msg?.viewOnce) {
-                viewOnceMsg = msg.message;
+        if (!viewOnceMsg) return null;
+
+        const types = ['imageMessage', 'videoMessage', 'audioMessage'];
+        for (const type of types) {
+            if (viewOnceMsg[type]) {
+                return {
+                    type: type.replace('Message', ''),
+                    content: viewOnceMsg[type],
+                    caption: viewOnceMsg[type]?.caption || '',
+                    mimetype: viewOnceMsg[type]?.mimetype || ''
+                };
             }
-
-            if (!viewOnceMsg) return null;
-
-            const mediaTypes = ['imageMessage', 'videoMessage', 'audioMessage'];
-            for (const mediaType of mediaTypes) {
-                if (viewOnceMsg[mediaType]) {
-                    return {
-                        type: mediaType.replace('Message', ''),
-                        content: viewOnceMsg[mediaType],
-                        caption: viewOnceMsg[mediaType].caption || '',
-                        mimetype: viewOnceMsg[mediaType].mimetype || '',
-                        originalMessage: msg
-                    };
-                }
-            }
-
-            return null;
-        } catch (error) {
-            this.log('Error extracting viewonce content:', error);
-            return null;
         }
+
+        return null;
     }
 
     async downloadViewOnceMedia(msg) {
-        try {
-            const viewOnceContent = this.extractViewOnceContent(msg);
-            if (!viewOnceContent) return null;
+        const viewOnceContent = this.extractViewOnceContent(msg);
+        if (!viewOnceContent) return null;
 
-            const buffer = await this.client.downloadMediaMessage(viewOnceContent.content);
-
-            if (this.config.logActivity) {
-                this.log(`Downloaded viewonce ${viewOnceContent.type} from ${msg.key.remoteJid}`);
+        // Construct a fake message to make Baileys happy
+        const fakeMsg = {
+            key: msg.key,
+            message: {
+                [`${viewOnceContent.type}Message`]: viewOnceContent.content
             }
+        };
 
+        try {
+            const buffer = await downloadMediaMessage(fakeMsg, 'buffer', {});
             return {
+                ...viewOnceContent,
                 buffer,
-                type: viewOnceContent.type,
-                mimetype: viewOnceContent.mimetype,
-                caption: viewOnceContent.caption,
                 filename: this.generateFilename(viewOnceContent.type, viewOnceContent.mimetype)
             };
         } catch (error) {
-            this.log('Error downloading viewonce media:', error);
-            return null;
-        }
-    }
-
-    async saveToTemp(mediaData, chatId) {
-        if (!this.config.saveToTemp || !mediaData) return null;
-
-        try {
-            const sanitizedChatId = chatId.replace(/[^a-zA-Z0-9]/g, '_');
-            const timestamp = Date.now();
-            const filename = `viewonce_${sanitizedChatId}_${timestamp}_${mediaData.filename}`;
-            const filePath = path.join(this.config.tempDir, filename);
-
-            create(filePath, mediaData.buffer);
-
-            this.log(`Saved viewonce media to: ${filePath}`);
-            return filePath;
-        } catch (error) {
-            this.log('Error saving to temp:', error);
+            console.error('❌ Failed to download view-once media:', error);
             return null;
         }
     }
@@ -119,74 +89,60 @@ class ViewOnceHandler {
     async forwardViewOnce(msg, mediaData) {
         if (!this.config.autoForward || !mediaData) return false;
 
+        const target = this.config.forwardTarget || msg.key.remoteJid;
+        const isGroup = target.endsWith('@g.us');
+        if (isGroup && !this.config.enableInGroups) return false;
+        if (!isGroup && !this.config.enableInPrivate) return false;
+
+        const content = {};
+        if (mediaData.type === 'image') {
+            content.image = mediaData.buffer;
+            content.caption = mediaData.caption || '👁️ ViewOnce Image';
+        } else if (mediaData.type === 'video') {
+            content.video = mediaData.buffer;
+            content.caption = mediaData.caption || '🎥 ViewOnce Video';
+        } else if (mediaData.type === 'audio') {
+            content.audio = mediaData.buffer;
+            content.mimetype = mediaData.mimetype || 'audio/mp4';
+        }
+
         try {
-            const chatId = msg.key.remoteJid;
-            const isGroup = chatId.endsWith('@g.us');
-
-            if (isGroup && !this.config.enableInGroups) return false;
-            if (!isGroup && !this.config.enableInPrivate) return false;
-
-            let messageContent = {};
-            switch (mediaData.type) {
-                case 'image':
-                    messageContent = {
-                        image: mediaData.buffer,
-                        caption: mediaData.caption || '👁️ ViewOnce Image'
-                    };
-                    break;
-                case 'video':
-                    messageContent = {
-                        video: mediaData.buffer,
-                        caption: mediaData.caption || '👁️ ViewOnce Video'
-                    };
-                    break;
-                case 'audio':
-                    messageContent = {
-                        audio: mediaData.buffer,
-                        mimetype: mediaData.mimetype || 'audio/mp4'
-                    };
-                    break;
-                default:
-                    return false;
-            }
-
-            await this.client.sendMessage(chatId, messageContent);
-            this.log(`Forwarded viewonce ${mediaData.type} to ${chatId}`);
+            await this.client.sendMessage(target, content);
             return true;
         } catch (error) {
-            this.log('Error forwarding viewonce:', error);
+            console.error('❌ Failed to forward view-once:', error);
             return false;
         }
     }
 
-    async processAudioViewOnce(audioBuffer, mimetype) {
+    async saveToTemp(mediaData) {
+        if (!this.config.saveToTemp || !mediaData) return null;
+
+        const filePath = path.join(this.config.tempDir, mediaData.filename);
+        try {
+            fs.writeFileSync(filePath, mediaData.buffer);
+            return filePath;
+        } catch (err) {
+            console.error('❌ Failed to save to temp:', err);
+            return null;
+        }
+    }
+
+    async processAudio(mediaData) {
+        const inputPath = path.join(tmpdir(), `input-${Date.now()}.ogg`);
+        const outputPath = path.join(tmpdir(), `output-${Date.now()}.mp3`);
+
+        fs.writeFileSync(inputPath, mediaData.buffer);
+
         return new Promise((resolve, reject) => {
-            try {
-                if (/ogg/.test(mimetype)) {
-                    const inputPath = path.join(tmpdir(), `input_${Date.now()}.ogg`);
-                    const outputPath = path.join(tmpdir(), `output_${Date.now()}.mp3`);
+            exec(`ffmpeg -i "${inputPath}" -vn -ar 44100 -ac 2 -b:a 128k "${outputPath}"`, (err) => {
+                fs.unlinkSync(inputPath);
+                if (err) return reject(err);
 
-                    create(inputPath, audioBuffer);
-
-                    exec(`ffmpeg -i ${inputPath} ${outputPath}`, (err) => {
-                        remove(inputPath);
-
-                        if (err) return reject(err);
-
-                        try {
-                            const convertedBuffer = read(outputPath);
-                            remove(outputPath);
-                            resolve(convertedBuffer);
-                        } catch (readErr) {
-                            reject(readErr);
-                        }
-                    });
-                } else {
-                    resolve(audioBuffer);
-                }
-            } catch (error) {
-                reject(error);
-            }
+                const mp3Buffer = fs.readFileSync(outputPath);
+                fs.unlinkSync(outputPath);
+                resolve(mp3Buffer);
+            });
         });
     }
 
@@ -194,119 +150,58 @@ class ViewOnceHandler {
         try {
             if (!this.isViewOnceMessage(msg)) return null;
 
-            const sender = msg.key.participant || msg.key.remoteJid;
-            const chatId = msg.key.remoteJid;
-            const isOwner = this.isOwner ? this.isOwner(sender) : false;
-
-            if (isOwner && this.config.skipOwner) return null;
-
             const mediaData = await this.downloadViewOnceMedia(msg);
             if (!mediaData) return null;
 
             if (mediaData.type === 'audio') {
-                try {
-                    mediaData.buffer = await this.processAudioViewOnce(mediaData.buffer, mediaData.mimetype);
-                } catch (err) {
-                    this.log('Audio conversion failed:', err);
-                }
+                mediaData.buffer = await this.processAudio(mediaData);
             }
 
-            let savedPath = null;
-            if (this.config.saveToTemp) {
-                savedPath = await this.saveToTemp(mediaData, chatId);
-            }
-
-            let forwarded = false;
-            if (this.config.autoForward) {
-                forwarded = await this.forwardViewOnce(msg, mediaData);
-            }
+            const savedPath = await this.saveToTemp(mediaData);
+            await this.forwardViewOnce(msg, mediaData);
 
             return {
                 success: true,
                 mediaData,
-                savedPath,
-                forwarded,
-                sender,
-                chatId,
-                timestamp: Date.now()
+                savedPath
             };
         } catch (error) {
-            this.log('Error handling viewonce message:', error);
-            return {
-                success: false,
-                error: error.message
-            };
+            console.error('❌ Error handling view-once message:', error);
+            return { success: false, error };
         }
     }
 
     generateFilename(type, mimetype) {
-        const timestamp = Date.now();
-        const extensions = {
+        const extMap = {
             'image/jpeg': 'jpg',
             'image/png': 'png',
             'image/webp': 'webp',
             'video/mp4': 'mp4',
-            'video/3gpp': '3gp',
-            'audio/mp4': 'mp3',
             'audio/ogg': 'ogg',
-            'audio/mpeg': 'mp3'
+            'audio/mpeg': 'mp3',
+            'audio/mp4': 'mp3'
         };
-        const ext = extensions[mimetype] || type;
-        return `${type}_${timestamp}.${ext}`;
+        const ext = extMap[mimetype] || type;
+        return `vo-${Date.now()}.${ext}`;
     }
 
-    setOwnerChecker(ownerChecker) {
-        this.isOwner = ownerChecker;
-    }
-
-    updateConfig(newConfig) {
-        this.config = { ...this.config, ...newConfig };
-    }
-
-    getConfig() {
-        return { ...this.config };
-    }
-
-    cleanTempDirectory(maxAge = 3600000) {
-        try {
-            const fs = require('fs');
-            const files = fs.readdirSync(this.config.tempDir);
-            const now = Date.now();
-
-            files.forEach(file => {
-                const filePath = path.join(this.config.tempDir, file);
-                const stats = fs.statSync(filePath);
-                if (now - stats.mtime.getTime() > maxAge) {
-                    fs.unlinkSync(filePath);
-                    this.log(`Cleaned old temp file: ${file}`);
-                }
-            });
-        } catch (error) {
-            this.log('Error cleaning temp directory:', error);
-        }
-    }
-
-    log(...args) {
-        if (this.config.logActivity) {
-            console.log('[ViewOnce]', ...args);
-        }
+    updateConfig(config) {
+        this.config = { ...this.config, ...config };
     }
 
     getStats() {
         return {
-            tempDir: this.config.tempDir,
-            tempDirExists: require('fs').existsSync(this.config.tempDir),
-            config: this.getConfig()
+            ...this.config,
+            tempDirExists: fs.existsSync(this.config.tempDir)
         };
     }
 }
 
-// ✅ Export the handler and factories properly
 module.exports = {
     ViewOnceHandler,
-    createViewOnceHandler: (client, config = {}) => new ViewOnceHandler(client, config),
-    setupViewOnceHandler: (client, options = {}) => {
-        const handler = new ViewOnceHandler(client, options);
+    createViewOnceHandler: (client, config) => new ViewOnceHandler(client, config),
+    setupViewOnceHandler: (client, config) => {
+        const handler = new ViewOnceHandler(client, config);
         return async (msg) => {
             if (handler.isViewOnceMessage(msg)) {
                 return await handler.handleViewOnceMessage(msg);
