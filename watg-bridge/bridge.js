@@ -34,8 +34,8 @@ class TelegramBridge {
         this.messageQueue = new Map();
         this.lastPresenceUpdate = new Map();
         this.topicVerificationCache = new Map();
-        this.pollingRetries = 0;
-        this.maxPollingRetries = 5;
+        this.creatingTopics = new Map(); // jid => Promise
+
     }
 
     async initialize() {
@@ -838,68 +838,80 @@ async sendStartMessage() {
     }
 
     async getOrCreateTopic(chatJid, whatsappMsg) {
+    // ✅ If topic already cached, return
     if (this.chatMappings.has(chatJid)) {
         return this.chatMappings.get(chatJid);
     }
 
-    const chatId = config.get('telegram.chatId');
-    if (!chatId || chatId.includes('YOUR_CHAT_ID')) {
-        logger.error('❌ Telegram chat ID not configured');
-        return null;
+    // ✅ If another creation is in progress, wait for it
+    if (this.creatingTopics.has(chatJid)) {
+        return await this.creatingTopics.get(chatJid);
     }
 
-    try {
-        const isGroup = chatJid.endsWith('@g.us');
-        const isStatus = chatJid === 'status@broadcast';
-        const isCall = chatJid === 'call@broadcast';
-        
-        let topicName;
-        let iconColor = 0x7ABA3C;
-        
-        if (isStatus) {
-            topicName = `📊 Status Updates`;
-            iconColor = 0xFF6B35;
-        } else if (isCall) {
-            topicName = `📞 Call Logs`;
-            iconColor = 0xFF4757;
-        } else if (isGroup) {
-            try {
-                const groupMeta = await this.whatsappBot.sock.groupMetadata(chatJid);
-                topicName = `${groupMeta.subject}`;
-            } catch (error) {
-                topicName = `Group Chat`;
+    const creationPromise = (async () => {
+        const chatId = config.get('telegram.chatId');
+        if (!chatId || chatId.includes('YOUR_CHAT_ID')) {
+            logger.error('❌ Telegram chat ID not configured');
+            return null;
+        }
+
+        try {
+            const isGroup = chatJid.endsWith('@g.us');
+            const isStatus = chatJid === 'status@broadcast';
+            const isCall = chatJid === 'call@broadcast';
+            
+            let topicName, iconColor = 0x7ABA3C;
+
+            if (isStatus) {
+                topicName = `📊 Status Updates`;
+                iconColor = 0xFF6B35;
+            } else if (isCall) {
+                topicName = `📞 Call Logs`;
+                iconColor = 0xFF4757;
+            } else if (isGroup) {
+                try {
+                    const groupMeta = await this.whatsappBot.sock.groupMetadata(chatJid);
+                    topicName = groupMeta.subject;
+                } catch {
+                    topicName = `Group Chat`;
+                }
+                iconColor = 0x6FB9F0;
+            } else {
+                const phone = chatJid.split('@')[0];
+                const contactName = this.contactMappings.get(phone);
+                topicName = contactName || `+${phone}`;
             }
-            iconColor = 0x6FB9F0;
-        } else {
-            const phone = chatJid.split('@')[0];
-            const contactName = this.contactMappings.get(phone);
-            topicName = contactName || `+${phone}`;
+
+            const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
+                icon_color: iconColor
+            });
+
+            let profilePicUrl = null;
+            if (!isStatus && !isCall) {
+                try {
+                    profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(chatJid, 'image');
+                } catch {}
+            }
+
+            await this.saveChatMapping(chatJid, topic.message_thread_id, profilePicUrl);
+            logger.info(`🆕 Created Telegram topic: "${topicName}" (ID: ${topic.message_thread_id}) for ${chatJid}`);
+
+            if (!isStatus && !isCall) {
+                await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg, profilePicUrl);
+            }
+
+            return topic.message_thread_id;
+
+        } catch (error) {
+            logger.error('❌ Failed to create Telegram topic:', error);
+            return null;
+        } finally {
+            this.creatingTopics.delete(chatJid); // ✅ Cleanup after done
         }
+    })();
 
-        const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
-            icon_color: iconColor
-        });
-
-        let profilePicUrl = null;
-        if (!isStatus && !isCall) {
-            try {
-                profilePicUrl = await this.whatsappBot.sock.profilePictureUrl(chatJid, 'image');
-            } catch {}
-        }
-
-        await this.saveChatMapping(chatJid, topic.message_thread_id, profilePicUrl);
-        logger.info(`🆕 Created Telegram topic: "${topicName}" (ID: ${topic.message_thread_id}) for ${chatJid}`);
-
-        if (!isStatus && !isCall) {
-            await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg, profilePicUrl);
-        }
-
-        return topic.message_thread_id;
-
-    } catch (error) {
-        logger.error('❌ Failed to create Telegram topic:', error);
-        return null;
-    }
+    this.creatingTopics.set(chatJid, creationPromise);
+    return await creationPromise;
 }
 
 
