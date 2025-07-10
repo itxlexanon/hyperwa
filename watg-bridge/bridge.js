@@ -550,7 +550,7 @@ async sendStartMessage() {
         }
     }
 
-async verifyTopicExists(topicId) {
+    async verifyTopicExists(topicId) {
     try {
         const chatId = config.get('telegram.chatId');
 
@@ -566,6 +566,7 @@ async verifyTopicExists(topicId) {
         return false;
     }
 }
+
 
     async recreateMissingTopics() {
         try {
@@ -854,25 +855,21 @@ async verifyTopicExists(topicId) {
     }
 
     async getOrCreateTopic(chatJid, whatsappMsg) {
-    // ✅ Prevent concurrent duplicate topic creation
-    if (this.topicVerificationCache.has(chatJid)) {
-        logger.debug(`⏳ Topic creation already in progress for ${chatJid}`);
-        return this.topicVerificationCache.get(chatJid);
-    }
-
-    const topicPromise = (async () => {
         if (this.chatMappings.has(chatJid)) {
             const topicId = this.chatMappings.get(chatJid);
+            
             const exists = await this.verifyTopicExists(topicId);
-            if (exists) return topicId;
-
-            logger.warn(`🗑️ Topic ${topicId} for ${chatJid} was deleted, recreating...`);
-            this.chatMappings.delete(chatJid);
-            this.profilePicCache.delete(chatJid);
-            await this.collection.deleteOne({
-                type: 'chat',
-                'data.whatsappJid': chatJid
-            });
+            if (exists) {
+                return topicId;
+            } else {
+                logger.warn(`🗑️ Topic ${topicId} for ${chatJid} was deleted, recreating...`);
+                this.chatMappings.delete(chatJid);
+                this.profilePicCache.delete(chatJid); // Clear profile pic cache
+                await this.collection.deleteOne({ 
+                    type: 'chat', 
+                    'data.whatsappJid': chatJid 
+                });
+            }
         }
 
         const chatId = config.get('telegram.chatId');
@@ -885,10 +882,10 @@ async verifyTopicExists(topicId) {
             const isGroup = chatJid.endsWith('@g.us');
             const isStatus = chatJid === 'status@broadcast';
             const isCall = chatJid === 'call@broadcast';
-
+            
             let topicName;
             let iconColor = 0x7ABA3C;
-
+            
             if (isStatus) {
                 topicName = `📊 Status Updates`;
                 iconColor = 0xFF6B35;
@@ -906,15 +903,17 @@ async verifyTopicExists(topicId) {
                 iconColor = 0x6FB9F0;
             } else {
                 const phone = chatJid.split('@')[0];
+                // FIXED: Use contact name from contacts list, not handle name
                 const contactName = this.contactMappings.get(phone);
                 topicName = contactName || `+${phone}`;
-                logger.debug(`📝 Creating topic for ${phone}: "${topicName}"`);
+                logger.debug(`📝 Creating topic for ${phone}: "${topicName}" (contact: ${contactName ? 'found' : 'not found'})`);
             }
 
             const topic = await this.telegramBot.createForumTopic(chatId, topicName, {
                 icon_color: iconColor
             });
 
+            // Get initial profile picture URL
             let initialProfilePicUrl = null;
             if (!isStatus && !isCall) {
                 try {
@@ -927,25 +926,17 @@ async verifyTopicExists(topicId) {
 
             await this.saveChatMapping(chatJid, topic.message_thread_id, initialProfilePicUrl);
             logger.info(`🆕 Created Telegram topic: "${topicName}" (ID: ${topic.message_thread_id}) for ${chatJid}`);
-
+            
             if (!isStatus && !isCall) {
                 await this.sendWelcomeMessage(topic.message_thread_id, chatJid, isGroup, whatsappMsg, initialProfilePicUrl);
             }
-
+            
             return topic.message_thread_id;
-
         } catch (error) {
             logger.error('❌ Failed to create Telegram topic:', error);
             return null;
         }
-    })();
-
-    this.topicVerificationCache.set(chatJid, topicPromise);
-    const createdTopicId = await topicPromise;
-    this.topicVerificationCache.delete(chatJid);
-    return createdTopicId;
-}
- 
+    }
 
     async sendWelcomeMessage(topicId, jid, isGroup, whatsappMsg, initialProfilePicUrl = null) {
         try {
