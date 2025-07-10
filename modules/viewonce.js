@@ -1,376 +1,580 @@
-const path = require('path');
-const fs = require('fs-extra');
+const helpers = require('../utils/helpers');
 const logger = require('./logger');
 const config = require('../config');
-const helpers = require('../utils/helpers');
+const { readFileSync: read, unlinkSync: remove, writeFileSync: create } = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const { tmpdir } = require('os');
 
-class ModuleLoader {
+class ViewOnceModule {
     constructor(bot) {
         this.bot = bot;
-        this.modules = new Map();
-        this.systemModulesCount = 0;
-        this.customModulesCount = 0;
-        logger.debug('ModuleLoader initialized');
-        this.setupModuleCommands();
+        this.name = 'viewonce';
+        
+        // Module metadata
+        this.metadata = {
+            name: 'ViewOnce Handler',
+            description: 'Automatically detects and processes ViewOnce messages',
+            version: '1.0.0',
+            author: 'HyperWa Team',
+            category: 'Media Processing',
+            dependencies: []
+        };
+
+        // Configuration
+        this.config = {
+            autoForward: config.get('viewonce.autoForward', true),
+            saveToTemp: config.get('viewonce.saveToTemp', true),
+            tempDir: config.get('viewonce.tempDir', './temp'),
+            skipOwner: config.get('viewonce.skipOwner', true),
+            logActivity: config.get('viewonce.logActivity', true),
+            maxTempAge: config.get('viewonce.maxTempAge', 24 * 60 * 60 * 1000), // 24 hours
+            supportedTypes: ['image', 'video', 'audio']
+        };
+
+        // Statistics
+        this.stats = {
+            processed: 0,
+            forwarded: 0,
+            saved: 0,
+            errors: 0,
+            startTime: Date.now()
+        };
+
+        // Commands that this module provides
+        this.commands = [
+            {
+                name: 'rvo',
+                description: 'Manually reveal a ViewOnce message',
+                usage: '.rvo (reply to viewonce)',
+                permissions: 'public',
+                execute: this.handleRvoCommand.bind(this)
+            },
+            {
+                name: 'viewonce',
+                description: 'Toggle ViewOnce auto-forward',
+                usage: '.viewonce [on/off]',
+                permissions: 'admin',
+                execute: this.handleViewOnceToggle.bind(this)
+            },
+            {
+                name: 'vostats',
+                description: 'Show ViewOnce module statistics',
+                usage: '.vostats',
+                permissions: 'admin',
+                execute: this.handleStatsCommand.bind(this)
+            }
+        ];
+
+        // Message hooks for automatic processing
+        this.messageHooks = {
+            'viewonce.detect': this.detectViewOnce.bind(this)
+        };
+
+        this.log('ViewOnce module initialized');
     }
 
-    setupModuleCommands() {
-        const loadModuleCommand = {
-            name: 'lm',
-            description: 'Load a module from file',
-            usage: '.lm (reply to a .js file)',
-            permissions: 'owner',
-            execute: async (msg, params, context) => {
-                if (!msg.message?.documentMessage?.fileName?.endsWith('.js')) {
-                    return context.bot.sendMessage(context.sender, {
-                        text: '🔧 *Load Module*\n\n❌ Please reply to a JavaScript (.js) file to load it as a module.'
-                    });
-                }
-                try {
-                    const processingMsg = await context.bot.sendMessage(context.sender, {
-                        text: '⚡ *Loading Module*\n\n🔄 Downloading and installing module...\n⏳ Please wait...'
-                    });
-                    const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
-                    const stream = await downloadContentFromMessage(msg.message.documentMessage, 'document');
-                    const chunks = [];
-                    for await (const chunk of stream) {
-                        chunks.push(chunk);
-                    }
-                    const buffer = Buffer.concat(chunks);
-                    const fileName = msg.message.documentMessage.fileName;
-                    const customModulesPath = path.join(__dirname, '../custom_modules');
-                    await fs.ensureDir(customModulesPath);
-                    const filePath = path.join(customModulesPath, fileName);
-                    await fs.writeFile(filePath, buffer);
-                    await this.loadModule(filePath, false);
-                    await context.bot.sock.sendMessage(context.sender, {
-                        text: `✅ *Module Loaded Successfully*\n\n📦 Module: \`${fileName}\`\n📁 Location: Custom Modules\n🎯 Status: Active\n⏰ ${new Date().toLocaleTimeString()}`,
-                        edit: processingMsg.key
-                    });
-                } catch (error) {
-                    logger.error('Failed to load module:', error);
-                    await context.bot.sendMessage(context.sender, {
-                        text: `❌ *Module Load Failed*\n\n🚫 Error: ${error.message}\n🔧 Please check the module file format.`
-                    });
-                }
-            }
-        };
-        const unloadModuleCommand = {
-            name: 'ulm',
-            description: 'Unload a module',
-            usage: '.ulm <module_name>',
-            permissions: 'owner',
-            execute: async (msg, params, context) => {
-                if (params.length === 0) {
-                    const moduleList = this.listModules().join('\n• ');
-                    return context.bot.sendMessage(context.sender, {
-                        text: `🔧 *Unload Module*\n\n📋 Available modules:\n• ${moduleList}\n\n💡 Usage: \`.ulm <module_name>\``
-                    });
-                }
-                const moduleName = params[0];
-                try {
-                    const processingMsg = await context.bot.sendMessage(context.sender, {
-                        text: `⚡ *Unloading Module*\n\n🔄 Removing: \`${moduleName}\`\n⏳ Please wait...`
-                    });
-                    await this.unloadModule(moduleName);
-                    await context.bot.sock.sendMessage(context.sender, {
-                        text: `✅ *Module Unloaded Successfully*\n\n📦 Module: \`${moduleName}\`\n🗑️ Status: Removed\n⏰ ${new Date().toLocaleTimeString()}`,
-                        edit: processingMsg.key
-                    });
-                } catch (error) {
-                    logger.error('Failed to unload module:', error);
-                    await context.bot.sendMessage(context.sender, {
-                        text: `❌ *Module Unload Failed*\n\n🚫 Error: ${error.message}\n📦 Module: \`${moduleName}\``
-                    });
-                }
-            }
-        };
-        const reloadModuleCommand = {
-            name: 'rlm',
-            description: 'Reload a module',
-            usage: '.rlm <module_name>',
-            permissions: 'owner',
-            execute: async (msg, params, context) => {
-                if (params.length === 0) {
-                    const moduleList = this.listModules().join('\n• ');
-                    return context.bot.sendMessage(context.sender, {
-                        text: `🔧 *Reload Module*\n\n📋 Available modules:\n• ${moduleList}\n\n💡 Usage: \`.rlm <module_name>\``
-                    });
-                }
-                const moduleName = params[0];
-                try {
-                    const processingMsg = await context.bot.sendMessage(context.sender, {
-                        text: `⚡ *Reloading Module*\n\n🔄 Restarting: \`${moduleName}\`\n⏳ Please wait...`
-                    });
-                    await this.reloadModule(moduleName);
-                    await context.bot.sock.sendMessage(context.sender, {
-                        text: `✅ *Module Reloaded Successfully*\n\n📦 Module: \`${moduleName}\`\n🔄 Status: Restarted\n⏰ ${new Date().toLocaleTimeString()}`,
-                        edit: processingMsg.key
-                    });
-                } catch (error) {
-                    logger.error('Failed to reload module:', error);
-                    await context.bot.sendMessage(context.sender, {
-                        text: `❌ *Module Reload Failed*\n\n🚫 Error: ${error.message}\n📦 Module: \`${moduleName}\``
-                    });
-                }
-            }
-        };
-        const listModulesCommand = {
-            name: 'modules',
-            description: 'List all loaded modules',
-            usage: '.modules',
-            permissions: 'public',
-            execute: async (msg, params, context) => {
-                const systemModules = [];
-                const customModules = [];
-                for (const [name, moduleInfo] of this.modules) {
-                    if (moduleInfo.isSystem) {
-                        systemModules.push(name);
-                    } else {
-                        customModules.push(name);
-                    }
-                }
-                let moduleText = `🔧 *Loaded Modules*\n\n`;
-                moduleText += `📊 **System Modules (${systemModules.length}):**\n`;
-                moduleText += systemModules.length > 0 ? `• ${systemModules.join('\n• ')}\n\n` : `• None loaded\n\n`;
-                moduleText += `🎨 **Custom Modules (${customModules.length}):**\n`;
-                moduleText += customModules.length > 0 ? `• ${customModules.join('\n• ')}\n\n` : `• None loaded\n\n`;
-                moduleText += `📈 **Total:** ${this.modules.size} modules active`;
-                await context.bot.sendMessage(context.sender, { text: moduleText });
-            }
-        };
-        this.bot.messageHandler.registerCommandHandler('lm', loadModuleCommand);
-        this.bot.messageHandler.registerCommandHandler('ulm', unloadModuleCommand);
-        this.bot.messageHandler.registerCommandHandler('rlm', reloadModuleCommand);
-        this.bot.messageHandler.registerCommandHandler('modules', listModulesCommand);
-    }
-
-    async loadModules() {
-        const systemPath = path.join(__dirname, '../modules');
-        const customPath = path.join(__dirname, '../custom_modules');
-        await fs.ensureDir(systemPath);
-        await fs.ensureDir(customPath);
-        const [systemFiles, customFiles] = await Promise.all([
-            fs.readdir(systemPath),
-            fs.readdir(customPath)
-        ]);
-        this.systemModulesCount = 0;
-        this.customModulesCount = 0;
-        logger.debug(`Loading system modules from: ${systemPath}`);
-        for (const file of systemFiles) {
-            if (file.endsWith('.js')) {
-                await this.loadModule(path.join(systemPath, file), true);
-            }
-        }
-        logger.debug(`Loading custom modules from: ${customPath}`);
-        for (const file of customFiles) {
-            if (file.endsWith('.js')) {
-                await this.loadModule(path.join(customPath, file), false);
-            }
-        }
-        this.setupHelpSystem();
-        logger.info(`✅ Loaded ${this.systemModulesCount} System Modules.`);
-        logger.info(`✅ Loaded ${this.customModulesCount} Custom Modules.`);
-        logger.info(`✅ Total Modules Loaded: ${this.systemModulesCount + this.customModulesCount}`);
-    }
-
-    setupHelpSystem() {
-        const helpCommand = {
-            name: 'help',
-            description: 'Show all available modules and commands or detailed help for a specific module',
-            usage: '.help [module_name]',
-            permissions: 'public',
-            execute: async (msg, params, context) => {
-                if (params.length > 0) {
-                    const moduleName = params[0].toLowerCase();
-                    const moduleInfo = this.getModule(moduleName);
-                    if (!moduleInfo) {
-                        await context.bot.sendMessage(context.sender, {
-                            text: `❌ Module \`${moduleName}\` not found.\n\nUse \`.help\` to see all available modules.`
-                        });
-                        return;
-                    }
-                    const metadata = moduleInfo.metadata || {};
-                    const commands = Array.isArray(moduleInfo.commands) ? moduleInfo.commands : [];
-                    let helpText = `📦 *Module: ${moduleName}*\n\n`;
-                    helpText += `📝 *Description*: ${metadata.description || 'No description available'}\n`;
-                    helpText += `🆚 *Version*: ${metadata.version || 'Unknown'}\n`;
-                    helpText += `👤 *Author*: ${metadata.author || 'Unknown'}\n`;
-                    helpText += `📂 *Category*: ${metadata.category || 'Uncategorized'}\n`;
-                    helpText += `📁 *Type*: ${this.modules.get(moduleName)?.isSystem ? 'System' : 'Custom'}\n\n`;
-                    helpText += commands.length > 0 ? `📋 *Commands* (${commands.length}):\n` : `📋 *Commands*: None\n`;
-                    for (const cmd of commands) {
-                        helpText += `  • \`${cmd.name}\` - ${cmd.description}\n`;
-                        helpText += `    Usage: \`${cmd.usage}\`\n`;
-                        helpText += `    Permissions: ${cmd.permissions || 'public'}\n`;
-                    }
-                    await context.bot.sendMessage(context.sender, { text: helpText });
-                    return;
-                }
-                let helpText = `🤖 *${config.get('bot.name')} Help Menu*\n\n`;
-                helpText += `🎯 *Prefix*: \`${config.get('bot.prefix')}\`\n`;
-                helpText += `📊 *Total Modules*: ${this.modules.size}\n`;
-                helpText += `📋 *Total Commands*: ${this.bot.messageHandler.commandHandlers.size}\n\n`;
-                const systemModules = [];
-                const customModules = [];
-                for (const [name, moduleInfo] of this.modules) {
-                    if (moduleInfo.isSystem) {
-                        systemModules.push({ name, instance: moduleInfo.instance });
-                    } else {
-                        customModules.push({ name, instance: moduleInfo.instance });
-                    }
-                }
-                helpText += `📊 *System Modules* (${systemModules.length}):\n`;
-                helpText += systemModules.length > 0 ? systemModules.map(mod => {
-                    const commands = Array.isArray(mod.instance.commands) ? mod.instance.commands : [];
-                    return `  📦 ${mod.name} (${commands.length} commands)\n` + 
-                           commands.map(cmd => `    • \`${cmd.name}\` - ${cmd.description} (Usage: \`${cmd.usage}\`)`).join('\n');
-                }).join('\n') + '\n\n' : `  • None loaded\n\n`;
-                helpText += `🎨 *Custom Modules* (${customModules.length}):\n`;
-                helpText += customModules.length > 0 ? customModules.map(mod => {
-                    const commands = Array.isArray(mod.instance.commands) ? mod.instance.commands : [];
-                    return `  📦 ${mod.name} (${commands.length} commands)\n` + 
-                           commands.map(cmd => `    • \`${cmd.name}\` - ${cmd.description} (Usage: \`${cmd.usage}\`)`).join('\n');
-                }).join('\n') + '\n\n' : `  • None loaded\n\n`;
-                helpText += `💡 *Tip*: Use \`.help <module_name>\` for detailed module info\n`;
-                helpText += `🔧 *Module Management*: \`.lm\`, \`.ulm\`, \`.rlm\`, \`.modules\`, \`.moduleinfo\`, \`.allmodules\``;
-                await context.bot.sendMessage(context.sender, { text: helpText });
-            }
-        };
-        this.bot.messageHandler.registerCommandHandler('help', helpCommand);
-    }
-
-    getCommandModule(commandName) {
-        for (const [moduleName, moduleInfo] of this.modules) {
-            if (moduleInfo.instance.commands) {
-                for (const cmd of moduleInfo.instance.commands) {
-                    if (cmd.name === commandName) {
-                        return moduleName;
-                    }
-                }
-            }
-        }
-        return 'Core System';
-    }
-
-    async loadModule(filePath, isSystem) {
-        const moduleId = path.basename(filePath, '.js');
-        logger.debug(`Attempting to load module: ${moduleId} from ${filePath}`);
+    /**
+     * Initialize the module
+     */
+    async init() {
         try {
-            delete require.cache[require.resolve(filePath)];
-            const mod = require(filePath);
-            const moduleInstance = typeof mod === 'function' && /^\s*class\s/.test(mod.toString()) 
-                                   ? new mod(this.bot) 
-                                   : mod;
-            const actualModuleId = (moduleInstance && moduleInstance.name) ? moduleInstance.name : moduleId;
-            if (!moduleInstance.metadata) {
-                moduleInstance.metadata = {
-                    description: 'No description provided',
-                    version: 'Unknown',
-                    author: 'Unknown',
-                    category: 'Uncategorized',
-                    dependencies: []
-                };
+            // Ensure temp directory exists
+            const fs = require('fs');
+            if (!fs.existsSync(this.config.tempDir)) {
+                fs.mkdirSync(this.config.tempDir, { recursive: true });
             }
-            if (moduleInstance.init && typeof moduleInstance.init === 'function') {
-                await moduleInstance.init();
-            }
-            if (Array.isArray(moduleInstance.commands)) {
-                for (const cmd of moduleInstance.commands) {
-                    if (!cmd.name || !cmd.description || !cmd.usage || !cmd.execute) {
-                        logger.warn(`⚠️ Invalid command in module ${actualModuleId}: ${JSON.stringify(cmd)}`);
-                        continue;
-                    }
-                    logger.debug(`Registering command: ${cmd.name} for module ${actualModuleId}`);
-                    const ui = cmd.ui || {};
-                    const wrappedCmd = cmd.autoWrap === false ? cmd : {
-                        ...cmd,
-                        execute: async (msg, params, context) => {
-                            await helpers.smartErrorRespond(context.bot, msg, {
-                                processingText: ui.processingText || `⏳ Running *${cmd.name}*...`,
-                                errorText: ui.errorText || `❌ *${cmd.name}* failed.`,
-                                actionFn: async () => {
-                                    return await cmd.execute(msg, params, context);
-                                }
-                            });
-                        }
+
+            // Start cleanup interval
+            setInterval(() => {
+                this.cleanTempDirectory();
+            }, 60 * 60 * 1000); // Clean every hour
+
+            this.log('ViewOnce module initialized successfully');
+        } catch (error) {
+            this.logError('Failed to initialize ViewOnce module:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Cleanup when module is destroyed
+     */
+    async destroy() {
+        this.log('ViewOnce module destroyed');
+    }
+
+    /**
+     * Check if message is a ViewOnce message
+     * @param {Object} msg - Message object
+     * @returns {boolean}
+     */
+    isViewOnceMessage(msg) {
+        if (!msg || !msg.message) return false;
+        
+        const message = msg.message;
+        return !!(
+            message.imageMessage?.viewOnce ||
+            message.videoMessage?.viewOnce ||
+            message.audioMessage?.viewOnce
+        );
+    }
+
+    /**
+     * Get ViewOnce media type
+     * @param {Object} msg - Message object
+     * @returns {string|null}
+     */
+    getViewOnceType(msg) {
+        if (!msg || !msg.message) return null;
+        
+        const message = msg.message;
+        if (message.imageMessage?.viewOnce) return 'image';
+        if (message.videoMessage?.viewOnce) return 'video';
+        if (message.audioMessage?.viewOnce) return 'audio';
+        
+        return null;
+    }
+
+    /**
+     * Download ViewOnce media
+     * @param {Object} msg - Message object
+     * @returns {Promise<Object|null>}
+     */
+    async downloadViewOnceMedia(msg) {
+        try {
+            const type = this.getViewOnceType(msg);
+            if (!type) return null;
+
+            const mediaMessage = msg.message[`${type}Message`];
+            if (!mediaMessage) return null;
+
+            // Download the media
+            const buffer = await this.bot.sock.downloadMediaMessage(msg);
+            if (!buffer) return null;
+
+            return {
+                type,
+                buffer,
+                mimetype: mediaMessage.mimetype || `${type}/unknown`,
+                caption: mediaMessage.caption || '',
+                filename: this.generateFilename(type, mediaMessage.mimetype)
+            };
+        } catch (error) {
+            this.logError('Error downloading ViewOnce media:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Save media to temp directory
+     * @param {Object} mediaData - Media data object
+     * @param {string} chatId - Chat ID for context
+     * @returns {Promise<string|null>}
+     */
+    async saveToTemp(mediaData, chatId) {
+        try {
+            const filename = `viewonce_${Date.now()}_${mediaData.filename}`;
+            const filepath = path.join(this.config.tempDir, filename);
+            
+            create(filepath, mediaData.buffer);
+            
+            this.stats.saved++;
+            this.log(`Saved ViewOnce ${mediaData.type} to temp: ${filename}`);
+            
+            return filepath;
+        } catch (error) {
+            this.logError('Error saving to temp:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Forward ViewOnce media to the same chat
+     * @param {Object} originalMsg - Original message
+     * @param {Object} mediaData - Media data
+     * @returns {Promise<boolean>}
+     */
+    async forwardViewOnce(originalMsg, mediaData) {
+        try {
+            const chatId = originalMsg.key.remoteJid;
+            
+            let messageContent = {};
+            
+            switch (mediaData.type) {
+                case 'image':
+                    messageContent = {
+                        image: mediaData.buffer,
+                        caption: mediaData.caption || '👁️ ViewOnce Image Revealed',
+                        mimetype: mediaData.mimetype
                     };
-                    this.bot.messageHandler.registerCommandHandler(cmd.name, wrappedCmd);
+                    break;
+                    
+                case 'video':
+                    messageContent = {
+                        video: mediaData.buffer,
+                        caption: mediaData.caption || '👁️ ViewOnce Video Revealed',
+                        mimetype: mediaData.mimetype
+                    };
+                    break;
+                    
+                case 'audio':
+                    // Process audio if needed
+                    let audioBuffer = mediaData.buffer;
+                    try {
+                        audioBuffer = await this.processAudioViewOnce(mediaData.buffer, mediaData.mimetype);
+                    } catch (audioError) {
+                        this.log('Audio processing failed, using original');
+                    }
+                    
+                    messageContent = {
+                        audio: audioBuffer,
+                        mimetype: mediaData.mimetype || 'audio/mp4'
+                    };
+                    break;
+                    
+                default:
+                    return false;
+            }
+
+            await this.bot.sock.sendMessage(chatId, messageContent);
+            
+            this.log(`Forwarded viewonce ${mediaData.type} to ${chatId}`);
+            this.stats.forwarded++;
+            return true;
+        } catch (error) {
+            this.logError('Error forwarding viewonce:', error);
+            this.stats.errors++;
+            return false;
+        }
+    }
+
+    /**
+     * Process audio viewonce (convert if needed)
+     * @param {Buffer} audioBuffer - Audio buffer
+     * @param {string} mimetype - Original mimetype
+     * @returns {Promise<Buffer>}
+     */
+    async processAudioViewOnce(audioBuffer, mimetype) {
+        return new Promise((resolve, reject) => {
+            try {
+                if (/ogg/.test(mimetype)) {
+                    const inputPath = path.join(tmpdir(), `input_${Date.now()}.ogg`);
+                    const outputPath = path.join(tmpdir(), `output_${Date.now()}.mp3`);
+                    
+                    create(inputPath, audioBuffer);
+                    
+                    exec(`ffmpeg -i ${inputPath} ${outputPath}`, (err) => {
+                        remove(inputPath);
+                        
+                        if (err) {
+                            reject(err);
+                            return;
+                        }
+                        
+                        try {
+                            const convertedBuffer = read(outputPath);
+                            remove(outputPath);
+                            resolve(convertedBuffer);
+                        } catch (readErr) {
+                            reject(readErr);
+                        }
+                    });
+                } else {
+                    resolve(audioBuffer);
+                }
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    /**
+     * Main viewonce detection hook
+     * @param {Object} msg - Message object
+     * @param {Object} context - Message context
+     */
+    async detectViewOnce(msg, context) {
+        if (!this.isViewOnceMessage(msg)) return;
+
+        const sender = msg.key.participant || msg.key.remoteJid;
+        const isOwner = context.isOwner || false;
+
+        if (isOwner && this.config.skipOwner) return;
+
+        await this.processViewOnce(msg, context);
+    }
+
+    /**
+     * Process viewonce message
+     * @param {Object} msg - Message object
+     * @param {Object} context - Message context
+     */
+    async processViewOnce(msg, context) {
+        try {
+            if (!this.isViewOnceMessage(msg)) return;
+
+            const mediaData = await this.downloadViewOnceMedia(msg);
+            if (!mediaData) return;
+
+            // Process audio if needed
+            if (mediaData.type === 'audio') {
+                try {
+                    mediaData.buffer = await this.processAudioViewOnce(mediaData.buffer, mediaData.mimetype);
+                } catch (audioError) {
+                    this.log('Audio processing failed, using original:', audioError);
                 }
             }
-            if (moduleInstance.messageHooks && typeof moduleInstance.messageHooks === 'object' && moduleInstance.messageHooks !== null) {
-                for (const [hook, fn] of Object.entries(moduleInstance.messageHooks)) {
-                    if (!hook || typeof hook !== 'string' || hook === 'all') {
-                        logger.error(`Invalid hook name '${hook}' in module ${actualModuleId}. Hook names cannot be 'all' or empty.`);
-                        continue;
-                    }
-                    if (typeof fn !== 'function') {
-                        logger.error(`Invalid handler for hook ${hook} in module ${actualModuleId}`);
-                        continue;
-                    }
-                    logger.debug(`Registering message hook: ${hook} for module ${actualModuleId}`);
-                    this.bot.messageHandler.registerMessageHook(hook, fn.bind(moduleInstance));
-                }
+
+            const chatId = msg.key.remoteJid;
+            
+            // Save to temp if enabled
+            let savedPath = null;
+            if (this.config.saveToTemp) {
+                savedPath = await this.saveToTemp(mediaData, chatId);
             }
-            this.modules.set(actualModuleId, {
-                instance: moduleInstance,
-                path: filePath,
-                isSystem
+
+            // Forward if enabled
+            let forwarded = false;
+            if (this.config.autoForward) {
+                forwarded = await this.forwardViewOnce(msg, mediaData);
+            }
+
+            this.stats.processed++;
+            
+            this.log(`Processed viewonce ${mediaData.type} from ${chatId}`);
+
+            return {
+                success: true,
+                mediaData,
+                savedPath,
+                forwarded,
+                timestamp: Date.now()
+            };
+        } catch (error) {
+            this.logError('Error processing viewonce:', error);
+            this.stats.errors++;
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Handle RVO command (manual reveal viewonce)
+     * @param {Object} msg - Message object
+     * @param {Array} params - Command parameters
+     * @param {Object} context - Command context
+     */
+    async handleRvoCommand(msg, params, context) {
+        if (!msg.quoted) {
+            return context.bot.sendMessage(context.sender, {
+                text: '🔍 *Manual ViewOnce Reveal*\n\n❌ Please reply to a ViewOnce message to reveal it.'
             });
-            if (isSystem) {
-                this.systemModulesCount++;
+        }
+
+        if (!this.isViewOnceMessage(msg.quoted)) {
+            return context.bot.sendMessage(context.sender, {
+                text: '❌ The replied message is not a ViewOnce message.'
+            });
+        }
+
+        const processingMsg = await context.bot.sendMessage(context.sender, {
+            text: '⚡ *Revealing ViewOnce*\n\n🔄 Processing ViewOnce message...\n⏳ Please wait...'
+        });
+
+        try {
+            const result = await this.processViewOnce(msg.quoted, context);
+            
+            if (result && result.success) {
+                await context.bot.sock.sendMessage(context.sender, {
+                    text: `✅ *ViewOnce Revealed Successfully*\n\n📦 Type: ${result.mediaData.type}\n📁 Saved: ${result.savedPath ? 'Yes' : 'No'}\n🔄 Forwarded: ${result.forwarded ? 'Yes' : 'No'}\n⏰ ${new Date().toLocaleTimeString()}`,
+                    edit: processingMsg.key
+                });
             } else {
-                this.customModulesCount++;
+                await context.bot.sock.sendMessage(context.sender, {
+                    text: `❌ *ViewOnce Reveal Failed*\n\n🚫 Error: ${result?.error || 'Unknown error'}\n🔧 Please try again or check the message format.`,
+                    edit: processingMsg.key
+                });
             }
-            logger.info(`✅ Loaded ${isSystem ? 'System' : 'Custom'} module: ${actualModuleId}`);
-        } catch (err) {
-            logger.error(`❌ Failed to load module '${moduleId}' from ${filePath}:`, err);
+        } catch (error) {
+            logger.error('RVO command failed:', error);
+            await context.bot.sendMessage(context.sender, {
+                text: `❌ *ViewOnce Reveal Failed*\n\n🚫 Error: ${error.message}`
+            });
         }
     }
 
-    getModule(name) {
-        return this.modules.get(name)?.instance || null;
+    /**
+     * Handle viewonce toggle command
+     * @param {Object} msg - Message object
+     * @param {Array} params - Command parameters
+     * @param {Object} context - Command context
+     */
+    async handleViewOnceToggle(msg, params, context) {
+        if (params.length === 0) {
+            const status = this.config.autoForward ? 'ON' : 'OFF';
+            return context.bot.sendMessage(context.sender, {
+                text: `🔍 *ViewOnce Auto-Forward Status*\n\n📊 Current Status: ${status}\n\n💡 Usage: \`.viewonce on\` or \`.viewonce off\``
+            });
+        }
+
+        const action = params[0].toLowerCase();
+        
+        if (!['on', 'off'].includes(action)) {
+            return context.bot.sendMessage(context.sender, {
+                text: '❌ Invalid option. Use `on` or `off`.'
+            });
+        }
+
+        this.config.autoForward = action === 'on';
+        
+        await context.bot.sendMessage(context.sender, {
+            text: `✅ ViewOnce auto-forward has been turned **${action.toUpperCase()}**`
+        });
     }
 
-    listModules() {
-        return [...this.modules.keys()];
+    /**
+     * Handle stats command
+     * @param {Object} msg - Message object
+     * @param {Array} params - Command parameters
+     * @param {Object} context - Command context
+     */
+    async handleStatsCommand(msg, params, context) {
+        const uptime = Date.now() - this.stats.startTime;
+        const uptimeStr = this.formatUptime(uptime);
+        
+        const statsText = `📊 *ViewOnce Module Statistics*\n\n` +
+            `📈 **Processing Stats:**\n` +
+            `• Processed: ${this.stats.processed}\n` +
+            `• Forwarded: ${this.stats.forwarded}\n` +
+            `• Saved: ${this.stats.saved}\n` +
+            `• Errors: ${this.stats.errors}\n\n` +
+            `⚙️ **Configuration:**\n` +
+            `• Auto-Forward: ${this.config.autoForward ? 'ON' : 'OFF'}\n` +
+            `• Save to Temp: ${this.config.saveToTemp ? 'ON' : 'OFF'}\n` +
+            `• Skip Owner: ${this.config.skipOwner ? 'ON' : 'OFF'}\n\n` +
+            `⏰ **Uptime:** ${uptimeStr}`;
+
+        await context.bot.sendMessage(context.sender, {
+            text: statsText
+        });
     }
 
-    async unloadModule(moduleId) {
-        const moduleInfo = this.modules.get(moduleId);
-        if (!moduleInfo) {
-            throw new Error(`Module ${moduleId} not found`);
-        }
-        if (moduleInfo.instance.destroy && typeof moduleInfo.instance.destroy === 'function') {
-            await moduleInfo.instance.destroy();
-        }
-        if (Array.isArray(moduleInfo.instance.commands)) {
-            for (const cmd of moduleInfo.instance.commands) {
-                if (cmd.name) {
-                    this.bot.messageHandler.unregisterCommandHandler(cmd.name);
+    /**
+     * Format uptime duration
+     * @param {number} ms - Milliseconds
+     * @returns {string}
+     */
+    formatUptime(ms) {
+        const seconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+
+        if (days > 0) return `${days}d ${hours % 24}h ${minutes % 60}m`;
+        if (hours > 0) return `${hours}h ${minutes % 60}m`;
+        if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+        return `${seconds}s`;
+    }
+
+    /**
+     * Generate filename based on type and mimetype
+     * @param {string} type - Media type
+     * @param {string} mimetype - MIME type
+     * @returns {string}
+     */
+    generateFilename(type, mimetype) {
+        const timestamp = Date.now();
+        const extensions = {
+            'image/jpeg': 'jpg',
+            'image/png': 'png',
+            'image/webp': 'webp',
+            'video/mp4': 'mp4',
+            'video/3gpp': '3gp',
+            'audio/mp4': 'mp3',
+            'audio/ogg': 'ogg',
+            'audio/mpeg': 'mp3'
+        };
+        
+        const ext = extensions[mimetype] || type;
+        return `${type}_${timestamp}.${ext}`;
+    }
+
+    /**
+     * Clean temp directory
+     * @param {number} maxAge - Maximum age in milliseconds
+     */
+    cleanTempDirectory(maxAge = this.config.maxTempAge) {
+        try {
+            const fs = require('fs');
+            if (!fs.existsSync(this.config.tempDir)) return;
+
+            const files = fs.readdirSync(this.config.tempDir);
+            const now = Date.now();
+            let cleaned = 0;
+
+            files.forEach(file => {
+                if (!file.startsWith('viewonce_')) return;
+
+                const filePath = path.join(this.config.tempDir, file);
+                try {
+                    const stats = fs.statSync(filePath);
+                    
+                    if (now - stats.mtime.getTime() > maxAge) {
+                        fs.unlinkSync(filePath);
+                        cleaned++;
+                    }
+                } catch (error) {
+                    // File might have been deleted already
                 }
+            });
+
+            if (cleaned > 0) {
+                this.log(`Cleaned ${cleaned} old viewonce temp files`);
             }
+        } catch (error) {
+            this.logError('Error cleaning temp directory:', error);
         }
-        if (moduleInfo.instance.messageHooks && typeof moduleInfo.instance.messageHooks === 'object') {
-            for (const hook of Object.keys(moduleInfo.instance.messageHooks)) {
-                this.bot.messageHandler.unregisterMessageHook(hook);
-            }
-        }
-        this.modules.delete(moduleId);
-        delete require.cache[moduleInfo.path];
-        logger.info(`🚫 Unloaded module: ${moduleId}`);
     }
 
-    async reloadModule(moduleId) {
-        const moduleInfo = this.modules.get(moduleId);
-        if (!moduleInfo) {
-            throw new Error(`Module ${moduleId} not found for reloading`);
+    /**
+     * Get module statistics
+     * @returns {Object}
+     */
+    getStats() {
+        return {
+            ...this.stats,
+            tempDir: this.config.tempDir,
+            tempDirExists: require('fs').existsSync(this.config.tempDir),
+            config: { ...this.config }
+        };
+    }
+
+    /**
+     * Update module configuration
+     * @param {Object} newConfig - New configuration
+     */
+    updateConfig(newConfig) {
+        this.config = { ...this.config, ...newConfig };
+        this.log('Configuration updated:', newConfig);
+    }
+
+    /**
+     * Log messages
+     * @param {...any} args - Arguments to log
+     */
+    log(...args) {
+        if (this.config.logActivity) {
+            logger.debug('[ViewOnce]', ...args);
         }
-        logger.info(`🔄 Reloading module: ${moduleId}`);
-        await this.unloadModule(moduleId);
-        await this.loadModule(moduleInfo.path, moduleInfo.isSystem);
-        logger.info(`✅ Reloaded module: ${moduleId}`);
+    }
+
+    /**
+     * Log errors
+     * @param {...any} args - Arguments to log
+     */
+    logError(...args) {
+        logger.error('[ViewOnce]', ...args);
     }
 }
 
-module.exports = ModuleLoader;
+module.exports = ViewOnceModule;
