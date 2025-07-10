@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const { tmpdir } = require('os');
+const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+
 
 module.exports = {
     name: 'rvo',
