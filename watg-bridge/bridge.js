@@ -598,12 +598,21 @@ async sendStartMessage() {
     const sender = whatsappMsg.key.remoteJid;
     const participant = whatsappMsg.key.participant || sender;
 
-    await this.createUserMapping(sender, whatsappMsg);
+    try {
+        await this.createUserMapping(sender, whatsappMsg);
+    } catch (err) {
+        logger.error(`❌ Failed to create user mapping for ${sender}:`, err);
+    }
 
     this.queueMessage(sender, async () => {
-        const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
-
         try {
+            const topicId = await this.getOrCreateTopic(sender, whatsappMsg);
+
+            if (!topicId) {
+                logger.error(`❌ Could not get or create topic for ${sender}`);
+                return;
+            }
+
             if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
                 await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId);
             } else if (whatsappMsg.message?.imageMessage) {
@@ -636,10 +645,11 @@ async sendStartMessage() {
             }
 
         } catch (err) {
-            logger.error(`❌ Failed to process message for ${sender}:`, err);
+            logger.error(`❌ Error processing message from ${sender}:`, err);
         }
     });
 }
+
 
     async handleStatusMessage(whatsappMsg, text) {
         try {
