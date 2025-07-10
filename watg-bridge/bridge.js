@@ -1095,63 +1095,32 @@ async sendStartMessage() {
         const sender = whatsappMsg.key.remoteJid;
 
         switch (mediaType) {
-            case 'image':
-                mediaMessage = whatsappMsg.message.imageMessage;
-                fileName += '.jpg';
-                break;
-            case 'video':
-                mediaMessage = whatsappMsg.message.videoMessage;
-                fileName += '.mp4';
-                break;
-            case 'video_note':
-                mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage;
-                fileName += '.mp4';
-                break;
-            case 'audio':
-                mediaMessage = whatsappMsg.message.audioMessage;
-                fileName += '.ogg';
-                break;
-            case 'document':
-                mediaMessage = whatsappMsg.message.documentMessage;
-                fileName = mediaMessage.fileName || `document_${Date.now()}`;
-                break;
-            case 'sticker':
-                mediaMessage = whatsappMsg.message.stickerMessage;
-                fileName += '.webp';
-                break;
+            case 'image': mediaMessage = whatsappMsg.message.imageMessage; fileName += '.jpg'; break;
+            case 'video': mediaMessage = whatsappMsg.message.videoMessage; fileName += '.mp4'; break;
+            case 'video_note': mediaMessage = whatsappMsg.message.ptvMessage || whatsappMsg.message.videoMessage; fileName += '.mp4'; break;
+            case 'audio': mediaMessage = whatsappMsg.message.audioMessage; fileName += '.ogg'; break;
+            case 'document': mediaMessage = whatsappMsg.message.documentMessage; fileName = mediaMessage.fileName || `document_${Date.now()}`; break;
+            case 'sticker': mediaMessage = whatsappMsg.message.stickerMessage; fileName += '.webp'; break;
         }
 
-        if (!mediaMessage) {
-            logger.error(`❌ No media message found for ${mediaType}`);
-            return;
-        }
+        if (!mediaMessage) return logger.error(`❌ No media content for ${mediaType}`);
 
-        const downloadType = mediaType === 'sticker' ? 'sticker' :
-                            mediaType === 'video_note' ? 'video' : mediaType;
-        const stream = await downloadContentFromMessage(mediaMessage, downloadType);
+        const stream = await downloadContentFromMessage(mediaMessage, mediaType === 'video_note' ? 'video' : mediaType);
         const buffer = await this.streamToBuffer(stream);
-        if (!buffer || buffer.length === 0) {
-            logger.error(`❌ Empty buffer for ${mediaType}`);
-            return;
-        }
+        if (!buffer?.length) return logger.error(`❌ Empty buffer for ${mediaType}`);
 
         const filePath = path.join(this.tempDir, fileName);
         await fs.writeFile(filePath, buffer);
 
         const chatId = config.get('telegram.chatId');
+        const retryMeta = { jid: sender, dummyMsg: whatsappMsg };
 
-        if (isOutgoing) {
-            caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
-        } else if (sender.endsWith('@g.us') && whatsappMsg.key.participant !== sender) {
+        if (isOutgoing) caption = caption ? `📤 You: ${caption}` : '📤 You sent media';
+        else if (sender.endsWith('@g.us') && whatsappMsg.key.participant !== sender) {
             const senderPhone = whatsappMsg.key.participant.split('@')[0];
             const senderName = this.contactMappings.get(senderPhone) || senderPhone;
             caption = `👤 ${senderName}:\n${caption || ''}`;
         }
-
-        const retryMeta = {
-            jid: sender,
-            dummyMsg: whatsappMsg
-        };
 
         switch (mediaType) {
             case 'image':
@@ -1161,34 +1130,28 @@ async sendStartMessage() {
                 break;
 
             case 'video':
-                if (mediaMessage.gifPlayback) {
-                    await this.safeTelegramSend('animation', chatId, topicId,
-                        this.telegramBot.sendAnimation.bind(this.telegramBot),
-                        [filePath, { caption }], caption, retryMeta);
-                } else {
-                    await this.safeTelegramSend('video', chatId, topicId,
-                        this.telegramBot.sendVideo.bind(this.telegramBot),
-                        [filePath, { caption }], caption, retryMeta);
-                }
+                const isGif = mediaMessage.gifPlayback;
+                await this.safeTelegramSend(isGif ? 'gif' : 'video', chatId, topicId,
+                    isGif ? this.telegramBot.sendAnimation.bind(this.telegramBot) : this.telegramBot.sendVideo.bind(this.telegramBot),
+                    [filePath, { caption }], caption, retryMeta);
                 break;
 
             case 'video_note':
-                const videoNotePath = await this.convertToVideoNote(filePath);
+                const notePath = await this.convertToVideoNote(filePath);
                 await this.safeTelegramSend('video_note', chatId, topicId,
                     this.telegramBot.sendVideoNote.bind(this.telegramBot),
-                    [videoNotePath], caption, retryMeta);
-                if (videoNotePath !== filePath) await fs.unlink(videoNotePath).catch(() => {});
+                    [notePath, {}], caption, retryMeta);
+                if (notePath !== filePath) await fs.unlink(notePath).catch(() => {});
                 break;
 
             case 'audio':
                 const isVoice = mediaMessage.ptt;
-                const method = isVoice ? 'sendVoice' : 'sendAudio';
-                const args = isVoice
+                const audioArgs = isVoice
                     ? [filePath, { caption }]
                     : [filePath, { caption, title: mediaMessage.title || 'Audio' }];
                 await this.safeTelegramSend('audio', chatId, topicId,
-                    this.telegramBot[method].bind(this.telegramBot),
-                    args, caption, retryMeta);
+                    this.telegramBot[isVoice ? 'sendVoice' : 'sendAudio'].bind(this.telegramBot),
+                    audioArgs, caption, retryMeta);
                 break;
 
             case 'document':
@@ -1201,9 +1164,8 @@ async sendStartMessage() {
                 try {
                     await this.safeTelegramSend('sticker', chatId, topicId,
                         this.telegramBot.sendSticker.bind(this.telegramBot),
-                        [filePath], null, retryMeta);
+                        [filePath, {}], null, retryMeta);
                 } catch (err) {
-                    logger.warn('Failed to send sticker, trying fallback:', err.message);
                     const pngPath = filePath.replace('.webp', '.png');
                     await sharp(filePath).png().toFile(pngPath);
                     await this.safeTelegramSend('sticker-fallback', chatId, topicId,
@@ -1215,12 +1177,13 @@ async sendStartMessage() {
         }
 
         await fs.unlink(filePath).catch(() => {});
-        logger.info(`✅ ${mediaType} sent successfully`);
+        logger.info(`✅ Sent ${mediaType} to Telegram`);
 
     } catch (err) {
         logger.error(`❌ handleWhatsAppMedia failed:`, err);
     }
 }
+
 
 
     async convertToVideoNote(inputPath) {
@@ -1296,7 +1259,15 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
 
 async safeTelegramSend(type, chatId, topicId, sendFn, args, textFallback = null, retryMeta = {}) {
     try {
-        return await sendFn(chatId, ...args, { message_thread_id: topicId });
+        // ✅ Inject message_thread_id correctly into the options object
+        if (typeof args[1] === 'object' && args[1] !== null) {
+            args[1].message_thread_id = topicId;
+        } else {
+            args[1] = { message_thread_id: topicId };
+        }
+
+        return await sendFn(chatId, ...args);
+
     } catch (error) {
         const desc = error.response?.data?.description || error.message;
         if (desc.includes('message thread not found')) {
@@ -1310,7 +1281,8 @@ async safeTelegramSend(type, chatId, topicId, sendFn, args, textFallback = null,
                 const newTopicId = await this.getOrCreateTopic(jid, dummyMsg);
                 if (newTopicId) {
                     try {
-                        return await sendFn(chatId, ...args, { message_thread_id: newTopicId });
+                        args[1].message_thread_id = newTopicId;
+                        return await sendFn(chatId, ...args);
                     } catch (retryError) {
                         logger.error(`❌ Retry failed for ${type}:`, retryError);
                         if (textFallback) {
@@ -1327,7 +1299,6 @@ async safeTelegramSend(type, chatId, topicId, sendFn, args, textFallback = null,
         return null;
     }
 }
-
 
     async markAsRead(jid, messageKeys) {
         try {
