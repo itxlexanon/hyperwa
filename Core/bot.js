@@ -26,50 +26,36 @@ class HyperWaBot {
 
     async initialize() {
     logger.info('🔧 Initializing HyperWa Userbot...');
-
+    
+    // Connect to the database
     try {
-        logger.debug('Connecting to DB...');
         this.db = await connectDb();
-        logger.info('✅ Database connected!');
-    } catch (err) {
-        logger.error('❌ DB connection failed:', err);
-        throw err;
+        logger.info('✅ Database connected successfully!');
+    } catch (error) {
+        logger.error('❌ Failed to connect to database:', error);
+        process.exit(1);
     }
 
+    // Initialize Telegram bridge first (for QR code sending)
     if (config.get('telegram.enabled')) {
         try {
-            logger.debug('Initializing Telegram bridge...');
             this.telegramBridge = new TelegramBridge(this);
             await this.telegramBridge.initialize();
-            logger.info('✅ Telegram bridge ready');
+            logger.info('✅ Telegram bridge initialized');
+            // Add this line:
             await this.telegramBridge.sendStartMessage();
-        } catch (err) {
-            logger.error('❌ Telegram bridge failed:', err);
-            throw err;
+        } catch (error) {
+            logger.error('❌ Failed to initialize Telegram bridge:', error);
         }
     }
-
-    try {
-        logger.debug('Loading modules...');
+        // Load modules using the ModuleLoader
         await this.moduleLoader.loadModules();
-        logger.info('✅ Modules loaded');
-    } catch (err) {
-        logger.error('❌ Module loading failed:', err);
-        throw err;
-    }
-
-    try {
-        logger.debug('Starting WhatsApp socket...');
+        
+        // Start WhatsApp connection
         await this.startWhatsApp();
-        logger.info('✅ WhatsApp started');
-    } catch (err) {
-        logger.error('❌ WhatsApp socket failed:', err);
-        throw err;
+        
+        logger.info('✅ HyperWa Userbot initialized successfully!');
     }
-
-    logger.info('✅ HyperWa Userbot initialized successfully!');
-}
-
 
     async startWhatsApp() {
         let state, saveCreds;
