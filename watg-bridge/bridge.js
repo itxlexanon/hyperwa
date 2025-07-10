@@ -778,41 +778,46 @@ async sendStartMessage() {
         return 'text';
     }
 
-    async syncOutgoingMessage(whatsappMsg, text, topicId, sender) {
-    try {
-        if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId, true);
-        } else if (whatsappMsg.message?.imageMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId, true);
-        } else if (whatsappMsg.message?.videoMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId, true);
-        } else if (whatsappMsg.message?.audioMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId, true);
-        } else if (whatsappMsg.message?.documentMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId, true);
-        } else if (whatsappMsg.message?.stickerMessage) {
-            await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId, true);
-        } else if (whatsappMsg.message?.locationMessage) {
-            await this.handleWhatsAppLocation(whatsappMsg, topicId, true);
-        } else if (whatsappMsg.message?.contactMessage) {
-            await this.handleWhatsAppContact(whatsappMsg, topicId, true);
-        } else if (text) {
-            const textLower = text.toLowerCase();
-            for (const word of this.filters) {
-                if (textLower.startsWith(word)) {
-                    logger.info(`🛑 Outgoing message blocked by filter "${word}": ${text}`);
-                    return; // Skip sending
-                }
+       async syncOutgoingMessage(whatsappMsg, text, topicId, sender) {
+        try {
+            if (whatsappMsg.message?.ptvMessage || (whatsappMsg.message?.videoMessage?.ptv)) {
+                await this.handleWhatsAppMedia(whatsappMsg, 'video_note', topicId, true);
+            } else if (whatsappMsg.message?.imageMessage) {
+                await this.handleWhatsAppMedia(whatsappMsg, 'image', topicId, true);
+            } else if (whatsappMsg.message?.videoMessage) {
+                await this.handleWhatsAppMedia(whatsappMsg, 'video', topicId, true);
+            } else if (whatsappMsg.message?.audioMessage) {
+                await this.handleWhatsAppMedia(whatsappMsg, 'audio', topicId, true);
+            } else if (whatsappMsg.message?.documentMessage) {
+                await this.handleWhatsAppMedia(whatsappMsg, 'document', topicId, true);
+            } else if (whatsappMsg.message?.stickerMessage) {
+                await this.handleWhatsAppMedia(whatsappMsg, 'sticker', topicId, true);
+            } else if (whatsappMsg.message?.locationMessage) { 
+                await this.handleWhatsAppLocation(whatsappMsg, topicId, true);
+            } else if (whatsappMsg.message?.contactMessage) { 
+                await this.handleWhatsAppContact(whatsappMsg, topicId, true);
+            } else if (text) {
+                const messageText = `📤 You: ${text}`;
+                await this.sendSimpleMessage(topicId, messageText, sender);
             }
-
-            const messageText = `📤 You: ${text}`;
-            await this.sendSimpleMessage(topicId, messageText, sender);
+        } catch (error) {
+            logger.error('❌ Failed to sync outgoing message:', error);
         }
-    } catch (error) {
-        logger.error('❌ Failed to sync outgoing message:', error);
     }
-}
 
+    queueMessageForReadReceipt(chatJid, messageKey) {
+        if (!config.get('telegram.features.readReceipts')) return;
+        
+        if (!this.messageQueue.has(chatJid)) {
+            this.messageQueue.set(chatJid, []);
+        }
+        
+        this.messageQueue.get(chatJid).push(messageKey);
+        
+        setTimeout(() => {
+            this.processReadReceipts(chatJid);
+        }, 2000);
+    }
 
     async processReadReceipts(chatJid) {
         try {
@@ -829,6 +834,7 @@ async sendStartMessage() {
             logger.debug('Failed to send read receipts:', error);
         }
     }
+
 
     async createUserMapping(participant, whatsappMsg) {
         if (this.userMappings.has(participant)) {
@@ -1346,69 +1352,82 @@ async handleWhatsAppContact(whatsappMsg, topicId, isOutgoing = false) {
     }
 
     async handleTelegramMessage(msg) {
-        try {
-            const topicId = msg.message_thread_id;
-            const whatsappJid = this.findWhatsAppJidByTopic(topicId);
-            
-            if (!whatsappJid) {
-                logger.warn('⚠️ Could not find WhatsApp chat for Telegram message');
-                return;
-            }
-
-            await this.sendTypingPresence(whatsappJid);
-
-            if (whatsappJid === 'status@broadcast' && msg.reply_to_message) {
-                await this.handleStatusReply(msg);
-                return;
-            }
-
-            if (msg.photo) {
-                await this.handleTelegramMedia(msg, 'photo');
-            } else if (msg.video) {
-                await this.handleTelegramMedia(msg, 'video');
-            } else if (msg.animation) {
-                await this.handleTelegramMedia(msg, 'animation');
-            } else if (msg.video_note) {
-                await this.handleTelegramMedia(msg, 'video_note');
-            } else if (msg.voice) {
-                await this.handleTelegramMedia(msg, 'voice');
-            } else if (msg.audio) {
-                await this.handleTelegramMedia(msg, 'audio');
-            } else if (msg.document) {
-                await this.handleTelegramMedia(msg, 'document');
-            } else if (msg.sticker) {
-                await this.handleTelegramMedia(msg, 'sticker');
-            } else if (msg.location) {
-                await this.handleTelegramLocation(msg);
-            } else if (msg.contact) {
-                await this.handleTelegramContact(msg);
-            } else if (msg.text) {
-                const messageOptions = { text: msg.text };
-                
-                if (msg.entities && msg.entities.some(entity => entity.type === 'spoiler')) {
-                    messageOptions.text = `🫥 ${msg.text}`;
-                }
-
-                const sendResult = await this.whatsappBot.sendMessage(whatsappJid, messageOptions);
-                
-                if (sendResult?.key?.id) {
-                    await this.setReaction(msg.chat.id, msg.message_id, '👍');
-                    
-                    setTimeout(async () => {
-                        await this.markAsRead(whatsappJid, [sendResult.key]);
-                    }, 1000);
-                }
-            }
-
-            setTimeout(async () => {
-                await this.sendPresence(whatsappJid, 'available');
-            }, 2000);
-
-        } catch (error) {
-            logger.error('❌ Failed to handle Telegram message:', error);
-            await this.setReaction(msg.chat.id, msg.message_id, '❌');
+    try {
+        const topicId = msg.message_thread_id;
+        const whatsappJid = this.findWhatsAppJidByTopic(topicId);
+        
+        if (!whatsappJid) {
+            logger.warn('⚠️ Could not find WhatsApp chat for Telegram message');
+            return;
         }
+
+        await this.sendTypingPresence(whatsappJid);
+
+        if (whatsappJid === 'status@broadcast' && msg.reply_to_message) {
+            await this.handleStatusReply(msg);
+            return;
+        }
+
+        if (msg.photo) {
+            await this.handleTelegramMedia(msg, 'photo');
+        } else if (msg.video) {
+            await this.handleTelegramMedia(msg, 'video');
+        } else if (msg.animation) {
+            await this.handleTelegramMedia(msg, 'animation');
+        } else if (msg.video_note) {
+            await this.handleTelegramMedia(msg, 'video_note');
+        } else if (msg.voice) {
+            await this.handleTelegramMedia(msg, 'voice');
+        } else if (msg.audio) {
+            await this.handleTelegramMedia(msg, 'audio');
+        } else if (msg.document) {
+            await this.handleTelegramMedia(msg, 'document');
+        } else if (msg.sticker) {
+            await this.handleTelegramMedia(msg, 'sticker');
+        } else if (msg.location) {
+            await this.handleTelegramLocation(msg);
+        } else if (msg.contact) {
+            await this.handleTelegramContact(msg);
+        } else if (msg.text) {
+            const originalText = msg.text.trim();
+            const textLower = originalText.toLowerCase();
+
+            // ✅ Filter enforcement
+            for (const word of this.filters || []) {
+                if (textLower.startsWith(word)) {
+                    logger.info(`🛑 Blocked Telegram ➝ WhatsApp message due to filter "${word}": ${originalText}`);
+                    await this.setReaction(msg.chat.id, msg.message_id, '🚫');
+                    return;
+                }
+            }
+
+            // ✅ If allowed, send message
+            const messageOptions = { text: originalText };
+            if (msg.entities && msg.entities.some(entity => entity.type === 'spoiler')) {
+                messageOptions.text = `🫥 ${originalText}`;
+            }
+
+            const sendResult = await this.whatsappBot.sendMessage(whatsappJid, messageOptions);
+
+            if (sendResult?.key?.id) {
+                await this.setReaction(msg.chat.id, msg.message_id, '👍');
+
+                setTimeout(async () => {
+                    await this.markAsRead(whatsappJid, [sendResult.key]);
+                }, 1000);
+            }
+        }
+
+        setTimeout(async () => {
+            await this.sendPresence(whatsappJid, 'available');
+        }, 2000);
+
+    } catch (error) {
+        logger.error('❌ Failed to handle Telegram message:', error);
+        await this.setReaction(msg.chat.id, msg.message_id, '❌');
     }
+}
+
 
     async handleStatusReply(msg) {
         try {
