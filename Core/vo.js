@@ -576,4 +576,18 @@ class ViewOnceModule {
     }
 }
 
-module.exports = ViewOnceModule;
+module.exports = {
+    ViewOnceHandler,
+    createViewOnceHandler: (client, config = {}) => new ViewOnceHandler(client, config),
+    setupViewOnceHandler: (client, options = {}) => {
+        const handler = new ViewOnceHandler(client, options);
+
+        return async (msg) => {
+            if (handler.isViewOnceMessage(msg)) {
+                return await handler.handleViewOnceMessage(msg);
+            }
+            return null;
+        };
+    }
+};
+
