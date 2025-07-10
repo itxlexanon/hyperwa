@@ -727,6 +727,8 @@ class TelegramBridge {
                             logger.error('❌ Failed to recreate status topic. Media not sent.');
                         }
                     } else {
+                         // Enhanced error logging
+                        logger.error('❌ Failed to send status media to Telegram:', error.response ? error.response.data : error.message);
                         throw error; // Re-throw other errors
                     }
                 }
@@ -917,7 +919,7 @@ class TelegramBridge {
 
             return topicId;
         } catch (error) {
-            logger.error('❌ Failed to create Telegram topic:', error);
+            logger.error('❌ Failed to create Telegram topic:', error.response ? error.response.data : error.message); // Enhanced error logging
             return null;
         }
     }
@@ -980,7 +982,7 @@ class TelegramBridge {
             }
 
         } catch (error) {
-            logger.error('❌ Failed to send welcome message:', error);
+            logger.error('❌ Failed to send welcome message:', error.response ? error.response.data : error.message); // Enhanced error logging
         }
     }
 
@@ -1049,6 +1051,8 @@ class TelegramBridge {
                                 logger.error('❌ Failed to recreate topic. Profile picture not sent.');
                             }
                         } else {
+                            // Enhanced error logging
+                            logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error.response ? error.response.data : error.message);
                             throw error; // Re-throw other errors
                         }
                     }
@@ -1059,7 +1063,7 @@ class TelegramBridge {
                 logger.debug(`📸 No profile picture available for ${jid}`);
             }
         } catch (error) {
-            logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error);
+            logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error.response ? error.response.data : error.message); // Enhanced error logging
         }
     }
 
@@ -1113,6 +1117,8 @@ class TelegramBridge {
                             logger.error('❌ Failed to recreate topic. Profile picture not sent.');
                         }
                     } else {
+                        // Enhanced error logging
+                        logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error.response ? error.response.data : error.message);
                         throw error; // Re-throw other errors
                     }
                 }
@@ -1120,7 +1126,7 @@ class TelegramBridge {
             await sendPhotoWithRetry(topicId); // Initial attempt
 
         } catch (error) {
-            logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error);
+            logger.error(`📸 ❌ Could not send profile picture for ${jid}:`, error.response ? error.response.data : error.message); // Enhanced error logging
         }
     }
 
@@ -1160,7 +1166,7 @@ class TelegramBridge {
 
             logger.info(`📞 Sent call notification from ${callerName}`);
         } catch (error) {
-            logger.error('❌ Error handling call notification:', error);
+            logger.error('❌ Error handling call notification:', error.response ? error.response.data : error.message); // Enhanced error logging
         }
     }
 
@@ -1332,6 +1338,8 @@ class TelegramBridge {
                             logger.error('❌ Failed to recreate topic. Media not sent.');
                         }
                     } else {
+                        // Enhanced error logging
+                        logger.error(`❌ Failed to send ${mediaType} to Telegram:`, error.response ? error.response.data : error.message);
                         throw error; // Re-throw other errors
                     }
                 }
@@ -1339,7 +1347,7 @@ class TelegramBridge {
             await sendMediaWithRetry(topicId); // Initial attempt
 
         } catch (error) {
-            logger.error(`❌ Failed to handle WhatsApp ${mediaType}:`, error);
+            logger.error(`❌ Failed to handle WhatsApp ${mediaType}:`, error.response ? error.response.data : error.message); // Enhanced error logging
         }
     }
 
@@ -1411,6 +1419,8 @@ class TelegramBridge {
                             logger.error('❌ Failed to recreate topic. Location not sent.');
                         }
                     } else {
+                        // Enhanced error logging
+                        logger.error('❌ Failed to send location to Telegram:', error.response ? error.response.data : error.message);
                         throw error; // Re-throw other errors
                     }
                 }
@@ -1418,7 +1428,7 @@ class TelegramBridge {
             await sendLocationWithRetry(topicId); // Initial attempt
 
         } catch (error) {
-            logger.error('❌ Failed to handle WhatsApp location message:', error);
+            logger.error('❌ Failed to handle WhatsApp location message:', error.response ? error.response.data : error.message); // Enhanced error logging
         }
     }
 
@@ -1471,6 +1481,8 @@ class TelegramBridge {
                             logger.error('❌ Failed to recreate topic. Contact not sent.');
                         }
                     } else {
+                        // Enhanced error logging
+                        logger.error('❌ Failed to send contact to Telegram:', error.response ? error.response.data : error.message);
                         throw error; // Re-throw other errors
                     }
                 }
@@ -1478,7 +1490,7 @@ class TelegramBridge {
             await sendContactWithRetry(topicId); // Initial attempt
 
         } catch (error) {
-            logger.error('❌ Failed to handle WhatsApp contact message:', error);
+            logger.error('❌ Failed to handle WhatsApp contact message:', error.response ? error.response.data : error.message); // Enhanced error logging
         }
     }
 
@@ -1557,7 +1569,7 @@ class TelegramBridge {
             }, 2000);
 
         } catch (error) {
-            logger.error('❌ Failed to handle Telegram message:', error);
+            logger.error('❌ Failed to handle Telegram message:', error.response ? error.response.data : error.message); // Enhanced error logging
             await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
     }
@@ -1599,7 +1611,7 @@ class TelegramBridge {
             }
 
         } catch (error) {
-            logger.error('❌ Failed to handle status reply:', error);
+            logger.error('❌ Failed to handle status reply:', error.response ? error.response.data : error.message); // Enhanced error logging
             await this.telegramBot.sendMessage(msg.chat.id, `❌ Failed to send reply to ${contactName}`, {
                 message_thread_id: msg.message_thread_id
             });
@@ -1756,7 +1768,7 @@ class TelegramBridge {
             }
 
         } catch (error) {
-            logger.error(`❌ Failed to handle Telegram ${mediaType}:`, error);
+            logger.error(`❌ Failed to handle Telegram ${mediaType}:`, error.response ? error.response.data : error.message); // Enhanced error logging
             await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
     }
@@ -1816,7 +1828,7 @@ class TelegramBridge {
                 throw new Error('Sticker sent but no confirmation');
             }
         } catch (err) {
-            logger.error('❌ Failed to send sticker to WhatsApp:', err);
+            logger.error('❌ Failed to send sticker to WhatsApp:', err.response ? err.response.data : err.message); // Enhanced error logging
             await this.setReaction(chatId, msg.message_id, '❌');
 
             const fallbackPath = path.join(this.tempDir, `fallback_${Date.now()}.png`);
@@ -1876,7 +1888,7 @@ class TelegramBridge {
                 }, 1000);
             }
         } catch (error) {
-            logger.error('❌ Failed to handle Telegram location message:', error);
+            logger.error('❌ Failed to handle Telegram location message:', error.response ? error.response.data : error.message); // Enhanced error logging
             await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
     }
@@ -1914,7 +1926,7 @@ class TelegramBridge {
                 }, 1000);
             }
         } catch (error) {
-            logger.error('❌ Failed to handle Telegram contact message:', error);
+            logger.error('❌ Failed to handle Telegram contact message:', error.response ? error.response.data : error.message); // Enhanced error logging
             await this.setReaction(msg.chat.id, msg.message_id, '❌');
         }
     }
@@ -1961,7 +1973,8 @@ class TelegramBridge {
                     return null;
                 }
             } else {
-                logger.error('❌ Failed to send message to Telegram:', error);
+                // Enhanced error logging
+                logger.error('❌ Failed to send message to Telegram:', error.response ? error.response.data : error.message);
                 return null;
             }
         }
