@@ -1,4 +1,3 @@
-// message-handler (5).js
 const logger = require('./logger');
 const config = require('../config');
 const rateLimiter = require('./rate-limiter');
@@ -40,9 +39,9 @@ class MessageHandler {
 
         // Check and handle view-once message using the provided function
         if (this.handleViewOnce) {
-            const result = await this.handleViewOnce(msg); //
+            const result = await this.handleViewOnce(msg);
             if (result) {
-                logger.info('👁️ ViewOnce handled:', result); //
+                logger.info('👁️ ViewOnce handled:', result);
                 // If you want to prevent further processing (like command parsing or
                 // syncing to Telegram *as a regular message*), you can return here.
                 // However, syncing to Telegram as a media message might still be desired.
@@ -65,9 +64,7 @@ class MessageHandler {
             await this.handleNonCommandMessage(msg, text);
         }
 
-        // FIXED: ALWAYS sync to Telegram if bridge is active (this was the main issue)
-        // If view-once was handled and you returned above, this might not execute.
-        // Consider if you need separate logic for syncing view-once to Telegram.
+        // ALWAYS sync to Telegram if bridge is active
         if (this.bot.telegramBridge) {
             await this.bot.telegramBridge.syncMessage(msg, text);
         }
